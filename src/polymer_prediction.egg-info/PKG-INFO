@@ -1,0 +1,8 @@
+Metadata-Version: 2.1
+Name: polymer-prediction
+Version: 0.1.0
+Summary: NeurIPS Open Polymer Prediction Challenge
+Author: Your Name
+Author-email: your.email@example.com
+Requires-Python: >=3.8
+Provides-Extra: dev
