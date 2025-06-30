@@ -64,5 +64,4 @@ This project follows industry best practices for Python development:
 - Testing with pytest
 
 ## License
-
-[Add license information here]
+MIT
