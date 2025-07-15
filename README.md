@@ -65,4 +65,4 @@ This project follows industry best practices for Python development:
 
 ## License
 
-[Add license information here]
+MIT
