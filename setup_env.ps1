@@ -1,24 +1,45 @@
-# PowerShell script to set up virtual environment and install dependencies
+# PowerShell script to set up the development environment on Windows
+
+Write-Host "Setting up Polymer Prediction development environment..." -ForegroundColor Green
+
+# Check if Python is installed
+try {
+    $pythonVersion = python --version
+    Write-Host "Found Python: $pythonVersion" -ForegroundColor Green
+} catch {
+    Write-Host "Python not found. Please install Python 3.8 or higher." -ForegroundColor Red
+    exit 1
+}
 
 # Create virtual environment
-Write-Host "Creating virtual environment..." -ForegroundColor Green
+Write-Host "Creating virtual environment..." -ForegroundColor Yellow
 python -m venv venv
 
 # Activate virtual environment
-Write-Host "Activating virtual environment..." -ForegroundColor Green
-. .\venv\Scripts\Activate.ps1
+Write-Host "Activating virtual environment..." -ForegroundColor Yellow
+& .\venv\Scripts\Activate.ps1
 
-# Install uv
-Write-Host "Installing uv..." -ForegroundColor Green
-pip install uv
+# Upgrade pip
+Write-Host "Upgrading pip..." -ForegroundColor Yellow
+python -m pip install --upgrade pip
 
-# Install dependencies using uv
-Write-Host "Installing dependencies using uv..." -ForegroundColor Green
-uv pip install -r requirements.txt
+# Install the package with development dependencies
+Write-Host "Installing package with development dependencies..." -ForegroundColor Yellow
+pip install -e ".[dev,docs]"
 
-# Install the package in development mode
-Write-Host "Installing package in development mode..." -ForegroundColor Green
-pip install -e .
+# Install pre-commit hooks
+Write-Host "Installing pre-commit hooks..." -ForegroundColor Yellow
+pre-commit install
 
-Write-Host "Environment setup complete!" -ForegroundColor Green
-Write-Host "To activate the virtual environment in the future, run: .\venv\Scripts\Activate.ps1" -ForegroundColor Yellow
+# Create necessary directories
+Write-Host "Creating project directories..." -ForegroundColor Yellow
+New-Item -ItemType Directory -Force -Path "data", "logs", "outputs", "runs"
+
+# Generate sample data
+Write-Host "Generating sample data..." -ForegroundColor Yellow
+python scripts/setup_data.py --n_samples 100 --split
+
+Write-Host "Setup complete!" -ForegroundColor Green
+Write-Host "To activate the environment in the future, run: .\venv\Scripts\Activate.ps1" -ForegroundColor Cyan
+Write-Host "To run tests: make test" -ForegroundColor Cyan
+Write-Host "To train a model: make train" -ForegroundColor Cyan

@@ -1,0 +1,19 @@
+defaults:
+  - model: gcn
+  - training: default
+  - data: default
+  - featurization: default
+  - logging: default
+  - _self_
+
+name: "polymer_prediction"
+seed: 42
+device: "auto"
+output_dir: "outputs"
+
+hydra:
+  run:
+    dir: ${output_dir}/${name}/${now:%Y-%m-%d_%H-%M-%S}
+  sweep:
+    dir: ${output_dir}/${name}
+    subdir: ${hydra.job.num}

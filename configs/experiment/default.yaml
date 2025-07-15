@@ -1,0 +1,27 @@
+# @package _global_
+defaults:
+  - base_config
+  - model: gcn
+  - training: default
+  - data: default
+  - featurization: default
+  - logging: default
+
+name: "polymer_prediction_default"
+seed: 42
+device: "auto"
+output_dir: "outputs"
+
+# Override specific parameters for this experiment
+model:
+  hidden_channels: 128
+  num_gcn_layers: 3
+
+training:
+  num_epochs: 50
+  batch_size: 32
+  learning_rate: 1e-3
+
+data:
+  test_split: 0.2
+  val_split: 0.1

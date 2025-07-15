@@ -1,0 +1,43 @@
+version: '3.8'
+
+services:
+  polymer-prediction:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: polymer-prediction
+    volumes:
+      - .:/home/app
+      - ./data:/home/app/data
+      - ./models:/home/app/models
+      - ./results:/home/app/results
+      - ./logs:/home/app/logs
+    environment:
+      - PYTHONPATH=/home/app/src
+    ports:
+      - "8888:8888"
+    command: jupyter lab --ip=0.0.0.0 --port=8888 --no-browser --allow-root
+
+  jupyter:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: polymer-prediction-jupyter
+    volumes:
+      - .:/home/app
+    ports:
+      - "8888:8888"
+    environment:
+      - PYTHONPATH=/home/app/src
+    command: jupyter lab --ip=0.0.0.0 --port=8888 --no-browser --allow-root
+
+  tensorboard:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: polymer-prediction-tensorboard
+    volumes:
+      - ./runs:/home/app/runs
+    ports:
+      - "6006:6006"
+    command: tensorboard --logdir=/home/app/runs --host=0.0.0.0 --port=6006

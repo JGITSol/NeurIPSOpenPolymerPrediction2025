@@ -1,0 +1,7 @@
+# @package model
+name: "gcn"
+hidden_channels: 128
+num_gcn_layers: 3
+dropout: 0.1
+activation: "relu"
+batch_norm: true
