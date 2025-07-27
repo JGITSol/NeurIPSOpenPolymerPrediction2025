@@ -30,11 +30,11 @@ class PolymerGCN(Module):
             self.convs.append(GCNConv(hidden_channels, hidden_channels))
             self.bns.append(BatchNorm1d(hidden_channels))
 
-        # Output layer
+        # Output layer for multi-target prediction (5 properties)
         self.out = Sequential(
             Linear(hidden_channels, hidden_channels // 2),
             torch.nn.ReLU(),
-            Linear(hidden_channels // 2, 1)
+            Linear(hidden_channels // 2, 5)  # 5 properties: Tg, FFV, Tc, Density, Rg
         )
 
     def forward(self, data):
@@ -44,7 +44,7 @@ class PolymerGCN(Module):
             data (torch_geometric.data.Data): Input graph data
             
         Returns:
-            torch.Tensor: Predicted property value
+            torch.Tensor: Predicted property values (5 properties)
         """
         x, edge_index, batch = data.x, data.edge_index, data.batch
         

@@ -1,119 +1,156 @@
-# NeurIPS Open Polymer Prediction Challenge
+# NeurIPS Open Polymer Prediction Challenge 2025
 
-[![CI](https://github.com/yourusername/polymer-prediction/workflows/CI/badge.svg)](https://github.com/yourusername/polymer-prediction/actions)
-[![Documentation](https://github.com/yourusername/polymer-prediction/workflows/Documentation/badge.svg)](https://yourusername.github.io/polymer-prediction/)
 [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-This repository contains a **production-ready, industry-standard** machine learning pipeline for the NeurIPS Open Polymer Prediction Challenge. Built with modern Python best practices, comprehensive testing, and enterprise-grade tooling.
+This repository contains a **production-ready, industry-standard** machine learning pipeline for the **NeurIPS Open Polymer Prediction Challenge 2025**. The challenge involves predicting five key polymer properties (Tg, FFV, Tc, Density, Rg) from SMILES strings using Graph Neural Networks.
+
+## 🏆 Challenge Overview
+
+The NeurIPS Open Polymer Prediction 2025 challenge requires predicting polymer properties to accelerate sustainable materials research. The task involves:
+
+- **Input**: Polymer SMILES strings
+- **Output**: 5 properties - Glass transition temperature (Tg), Fractional free volume (FFV), Thermal conductivity (Tc), Density, and Radius of gyration (Rg)
+- **Evaluation**: Weighted Mean Absolute Error (wMAE) with property-specific reweighting
+- **Data**: 7,973 training samples with significant missing values (11.8% - 93.6% per property)
 
 ## 🚀 Quick Start
 
-### Automated Setup (Recommended)
+### Prerequisites
 
-**Windows:**
-```powershell
-.\setup_env.ps1
-```
-
-**Unix/MacOS:**
 ```bash
-make setup-env
-source venv/bin/activate
+pip install torch torch-geometric rdkit pandas numpy scikit-learn tqdm
 ```
 
-### Manual Setup
+### Competition Data Setup
 
-1. **Clone and install:**
+1. **Download competition data** from Kaggle and place in `info/` folder:
+   - `info/train.csv` - Training data with SMILES and target properties
+   - `info/test.csv` - Test data with SMILES only
+   - `info/sample_submission.csv` - Sample submission format
+
+### Training and Submission
+
+1. **Quick training and submission:**
    ```bash
-   git clone https://github.com/yourusername/polymer-prediction.git
-   cd polymer-prediction
-   pip install -e ".[dev,docs]"
+   python neurips_competition.py --epochs 50 --batch_size 32 --output submission.csv
    ```
 
-2. **Generate sample data:**
+2. **Optimized training with better hyperparameters:**
    ```bash
-   python scripts/setup_data.py --n_samples 1000 --split
+   python train_final_model.py
    ```
 
-3. **Train your first model:**
+3. **Custom hyperparameters:**
    ```bash
-   make train
+   python neurips_competition.py --epochs 100 --batch_size 64 --hidden_channels 256 --num_layers 4 --lr 0.001
    ```
 
 ## 🏗️ Architecture
 
 ```
-├── src/polymer_prediction/     # 🧠 Core ML Pipeline
-│   ├── config/                 # ⚙️  Configuration management (Hydra)
-│   ├── data/                   # 📊 Data loading, validation & processing
-│   ├── models/                 # 🤖 Neural network architectures
-│   ├── preprocessing/          # 🔧 SMILES to graph featurization
-│   ├── training/               # 🏋️  Training loops & optimization
-│   ├── utils/                  # 🛠️  Logging, metrics, I/O utilities
-│   └── visualization/          # 📈 Plotting & molecular visualization
-├── tests/                      # ✅ Comprehensive test suite
-├── configs/                    # 📋 Hydra configuration files
-├── docs/                       # 📚 Sphinx documentation
-├── scripts/                    # 🔨 Utility scripts
-├── .github/workflows/          # 🔄 CI/CD pipelines
-└── docker/                     # 🐳 Containerization
+├── .github/                    # CI/CD workflows
+├── .vscode/                    # VSCode settings
+├── configs/                    # Hydra configuration files
+├── data/
+│   ├── processed/              # Processed data
+│   └── raw/                    # Raw data
+├── docs/                       # Documentation
+├── models/                     # Trained models
+├── notebooks/                  # Jupyter notebooks
+├── reports/                    # Reports and figures
+├── scripts/                    # Utility scripts
+├── src/polymer_prediction/     # Main source code
+├── tests/                      # Test suite
+├── .dockerignore               # Docker ignore file
+├── .gitignore                  # Git ignore file
+├── .pre-commit-config.yaml     # Pre-commit hooks configuration
+├── CHANGELOG.md                # Changelog
+├── CONTRIBUTING.md             # Contribution guidelines
+├── Dockerfile                  # Dockerfile
+├── LICENSE                     # License
+├── Makefile                    # Makefile
+├── README.md                   # README
+├── pyproject.toml              # Project metadata and dependencies
+└── setup.cfg                   # Setup configuration
 ```
+
+This diagram provides a high-level overview of the repository structure. For more details, refer to the respective directories.
 
 ## 🎯 Key Features
 
+### 🧬 Competition-Specific
+- **Multi-target Prediction**: Simultaneous prediction of 5 polymer properties
+- **Missing Value Handling**: Robust handling of sparse training data
+- **Competition Metrics**: Implementation of weighted MAE evaluation metric
+- **SMILES Processing**: Advanced molecular featurization with RDKit
+- **Graph Neural Networks**: GCN-based architecture optimized for molecular data
+
 ### 🏭 Production-Ready
-- **Type Safety**: Full mypy type checking
-- **Data Validation**: Pydantic-based data validation
-- **Error Handling**: Comprehensive error handling and logging
-- **Configuration Management**: Hydra for flexible experimentation
-- **Containerization**: Docker support for reproducible environments
-
-### 🧪 Research-Friendly
-- **Modular Design**: Easy to extend with new models and features
-- **Experiment Tracking**: W&B and TensorBoard integration
-- **Hyperparameter Sweeps**: Built-in support for parameter optimization
+- **Modular Design**: Clean separation of concerns with proper abstractions
+- **Error Handling**: Comprehensive error handling for invalid SMILES
 - **Reproducibility**: Deterministic training with seed management
+- **Scalable Architecture**: Efficient batching and GPU support
+- **Industry Standards**: Following Python best practices and conventions
 
-### 🔧 Developer Experience
-- **Pre-commit Hooks**: Automated code quality checks
-- **CI/CD Pipeline**: GitHub Actions for testing and deployment
-- **Documentation**: Auto-generated API docs with Sphinx
-- **Testing**: 95%+ test coverage with pytest
+### 🔬 Research-Friendly
+- **Flexible Configuration**: Easy hyperparameter tuning
+- **Extensible Models**: Simple to add new GNN architectures
+- **Comprehensive Metrics**: Per-property and competition-specific evaluation
+- **Visualization Support**: Training curves and prediction analysis
 
-## 📊 Usage Examples
+## 📊 Competition Implementation
 
-### Basic Training
-```bash
-# Train with default configuration
-python -m polymer_prediction.main
+### Multi-Target Architecture
 
-# Train with custom data
-python -m polymer_prediction.main --data_path data/your_data.csv --target_column your_target
-```
+The model predicts all 5 properties simultaneously using a shared GCN encoder:
 
-### Advanced Configuration
-```bash
-# Use Hydra configuration
-python -m polymer_prediction.main --config-name experiment/custom
-
-# Hyperparameter sweep
-python -m polymer_prediction.main --multirun \
-  model.hidden_channels=64,128,256 \
-  training.learning_rate=1e-4,1e-3,1e-2
-```
-
-### Programmatic Usage
 ```python
-from polymer_prediction.main import main
-from polymer_prediction.config.config import CONFIG
+# Model outputs 5 values: [Tg, FFV, Tc, Density, Rg]
+predictions = model(molecular_graph)  # Shape: (batch_size, 5)
+```
 
-# Customize configuration
-CONFIG.NUM_EPOCHS = 100
-CONFIG.BATCH_SIZE = 64
+### Missing Value Handling
 
-# Run training
-main(args)
+Training data has significant missing values (11.8% - 93.6% per property). Our implementation:
+
+- Uses binary masks to track missing values
+- Computes loss only on available targets
+- Handles sparse gradients efficiently
+
+```python
+# Masked loss computation
+loss = masked_mse_loss(predictions, targets, masks)
+```
+
+### Competition Metric
+
+Implements the official weighted MAE metric:
+
+```python
+from polymer_prediction.utils.competition_metrics import weighted_mae
+
+# Calculate competition score
+wmae = weighted_mae(predictions, targets, masks)
+```
+
+### Usage Examples
+
+```bash
+# Quick training (10 epochs)
+python neurips_competition.py --epochs 10 --batch_size 32
+
+# Production training with optimized hyperparameters
+python train_final_model.py
+
+# Custom configuration
+python neurips_competition.py \
+  --epochs 100 \
+  --batch_size 64 \
+  --hidden_channels 256 \
+  --num_layers 4 \
+  --lr 0.001 \
+  --output my_submission.csv
 ```
 
 ## 🧬 Molecular Featurization
@@ -196,7 +233,7 @@ We welcome contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guid
 
 ## 📚 Documentation
 
-- **API Reference**: [https://yourusername.github.io/polymer-prediction/](https://yourusername.github.io/polymer-prediction/)
+- **API Reference**: [https://[YOUR_USERNAME].github.io/[YOUR_REPOSITORY]/](https://[YOUR_USERNAME].github.io/[YOUR_REPOSITORY]/)
 - **Examples**: See `docs/examples/` for detailed tutorials
 - **Configuration**: See `configs/` for configuration options
 
