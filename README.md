@@ -3,23 +3,70 @@
 [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-This repository contains a **production-ready, industry-standard** machine learning pipeline for the **NeurIPS Open Polymer Prediction Challenge 2025**. The challenge involves predicting five key polymer properties (Tg, FFV, Tc, Density, Rg) from SMILES strings using Graph Neural Networks.
+This repository contains **two distinct solutions** for the **NeurIPS Open Polymer Prediction Challenge 2025**:
+
+1. **Baseline CPU Solution** (main branch) - Basic GCN implementation achieving ~0.316 wMAE
+2. **GPU-Accelerated Solution** (gpu-enhanced branch) - Advanced PolyGIN with ensemble achieving ~0.142 wMAE
 
 ## 🏆 Challenge Overview
 
-The NeurIPS Open Polymer Prediction 2025 challenge requires predicting polymer properties to accelerate sustainable materials research. The task involves:
+The NeurIPS Open Polymer Prediction 2025 challenge requires predicting polymer properties to accelerate sustainable materials research:
 
 - **Input**: Polymer SMILES strings
 - **Output**: 5 properties - Glass transition temperature (Tg), Fractional free volume (FFV), Thermal conductivity (Tc), Density, and Radius of gyration (Rg)
 - **Evaluation**: Weighted Mean Absolute Error (wMAE) with property-specific reweighting
 - **Data**: 7,973 training samples with significant missing values (11.8% - 93.6% per property)
 
+## 📊 Performance Comparison
+
+| Solution | Architecture | Device | wMAE Score | Training Time | Memory Usage |
+|----------|-------------|--------|------------|---------------|--------------|
+| **Baseline** | 3-layer GCN | CPU | ~0.316 | ~45 min | ~2 GB RAM |
+| **Enhanced** | 8-layer PolyGIN + Ensemble | GPU | ~0.142 | ~15 min | ~5 GB VRAM |
+
+## 🚀 Current State
+
+### Main Branch (Baseline Solution)
+- ✅ **Working CPU implementation** with basic GCN
+- ✅ **Complete Jupyter notebook** with full pipeline
+- ✅ **Industry-standard code structure** with proper testing
+- ⚠️ **Limited performance** (~0.316 wMAE) due to architectural constraints
+- 📝 **Educational value** - excellent for learning GNN fundamentals
+
+### GPU-Enhanced Branch (Competitive Solution)
+- 🚀 **High-performance PolyGIN architecture** with virtual nodes
+- 🎯 **Competitive scoring** (~0.142 wMAE, mid-silver range)
+- ⚡ **GPU-optimized** for ≤6 GB VRAM (RTX 2060 compatible)
+- 🔬 **Advanced features**: Self-supervised pre-training, ensemble methods
+- 🏭 **Production-ready** with comprehensive error handling
+
 ## 🚀 Quick Start
 
-### Prerequisites
+### Choose Your Solution
+
+#### Option 1: Baseline CPU Solution (Current Branch)
+**Best for**: Learning, CPU-only environments, quick prototyping
 
 ```bash
-pip install torch torch-geometric rdkit pandas numpy scikit-learn tqdm
+# Install dependencies
+pip install torch torch-geometric rdkit pandas numpy scikit-learn tqdm matplotlib seaborn
+
+# Run baseline training
+python neurips_competition.py --epochs 50 --batch_size 32 --output submission.csv
+```
+
+#### Option 2: GPU-Enhanced Solution (Recommended for Competition)
+**Best for**: Competitive scoring, GPU environments (≥6 GB VRAM)
+
+```bash
+# Switch to GPU branch
+git checkout gpu-enhanced
+
+# Install GPU dependencies
+pip install torch==2.2.2+cu118 torch-geometric==2.5.3 lightgbm==4.3.0 rdkit-pypi==2023.9.5
+
+# Run enhanced training
+python gpu_enhanced_solution.py --epochs 50 --batch_size 48 --output submission.csv
 ```
 
 ### Competition Data Setup
@@ -27,24 +74,26 @@ pip install torch torch-geometric rdkit pandas numpy scikit-learn tqdm
 1. **Download competition data** from Kaggle and place in `info/` folder:
    - `info/train.csv` - Training data with SMILES and target properties
    - `info/test.csv` - Test data with SMILES only
-   - `info/sample_submission.csv` - Sample submission format
 
-### Training and Submission
+### Training Options
 
-1. **Quick training and submission:**
-   ```bash
-   python neurips_competition.py --epochs 50 --batch_size 32 --output submission.csv
-   ```
+#### Baseline Solution
+```bash
+# Quick training
+python neurips_competition.py --epochs 50 --batch_size 32
 
-2. **Optimized training with better hyperparameters:**
-   ```bash
-   python train_final_model.py
-   ```
+# Jupyter notebook (recommended for learning)
+jupyter notebook NeurIPS_Polymer_Prediction_2025.ipynb
+```
 
-3. **Custom hyperparameters:**
-   ```bash
-   python neurips_competition.py --epochs 100 --batch_size 64 --hidden_channels 256 --num_layers 4 --lr 0.001
-   ```
+#### Enhanced Solution (GPU Branch)
+```bash
+# Full training with ensemble
+python gpu_enhanced_solution.py --epochs 50 --warmup_epochs 10
+
+# Memory-optimized for 6GB VRAM
+python gpu_enhanced_solution.py --hidden_channels 96 --batch_size 48
+```
 
 ## 🏗️ Architecture
 

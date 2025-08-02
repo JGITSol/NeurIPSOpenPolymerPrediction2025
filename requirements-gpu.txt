@@ -1,0 +1,28 @@
+# GPU-Enhanced Solution Requirements
+# Optimized for CUDA 11.8 and ≤6 GB VRAM
+
+# Core ML frameworks
+torch==2.2.2+cu118
+torch-geometric==2.5.3
+torch-scatter==2.1.2+cu118
+torch-sparse==0.6.18+cu118
+
+# Chemistry and molecular processing
+rdkit-pypi==2023.9.5
+
+# Data processing and analysis
+pandas>=2.0.0
+numpy>=1.24.0
+scikit-learn>=1.2.0
+
+# Ensemble methods
+lightgbm==4.3.0
+
+# Utilities
+tqdm>=4.65.0
+matplotlib>=3.7.0
+seaborn>=0.12.0
+
+# Development (optional)
+jupyter>=1.0.0
+ipykernel>=6.23.0
