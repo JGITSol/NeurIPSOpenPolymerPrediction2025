@@ -1,0 +1,6 @@
+@echo off
+echo Activating virtual environment...
+call venv\Scripts\activate.bat
+echo Running GPU setup...
+python setup_gpu_env.py
+pause
