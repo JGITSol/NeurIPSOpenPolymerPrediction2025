@@ -24,21 +24,21 @@ The NeurIPS Open Polymer Prediction 2025 challenge requires predicting polymer p
 | **Baseline** | 3-layer GCN | CPU | ~0.316 | ~45 min | ~2 GB RAM |
 | **Enhanced** | 8-layer PolyGIN + Ensemble | GPU | ~0.142 | ~15 min | ~5 GB VRAM |
 
-## 🚀 Current State
+## 🚀 Current State - **BOTH SOLUTIONS READY** ✅
 
-### Main Branch (Baseline Solution)
-- ✅ **Working CPU implementation** with basic GCN
-- ✅ **Complete Jupyter notebook** with full pipeline
-- ✅ **Industry-standard code structure** with proper testing
-- ⚠️ **Limited performance** (~0.316 wMAE) due to architectural constraints
-- 📝 **Educational value** - excellent for learning GNN fundamentals
+### 📚 Main Branch (Educational Baseline)
+- **Status**: ✅ Fully Working
+- **Architecture**: 3-layer GCN with basic features
+- **Performance**: ~0.316 wMAE (functional baseline)
+- **Requirements**: CPU only, 2GB RAM
+- **Best for**: Learning GNNs, understanding fundamentals
 
-### GPU-Enhanced Branch (Competitive Solution)
-- 🚀 **High-performance PolyGIN architecture** with virtual nodes
-- 🎯 **Competitive scoring** (~0.142 wMAE, mid-silver range)
-- ⚡ **GPU-optimized** for ≤6 GB VRAM (RTX 2060 compatible)
-- 🔬 **Advanced features**: Self-supervised pre-training, ensemble methods
-- 🏭 **Production-ready** with comprehensive error handling
+### 🏆 GPU Branch (Competition Solution) - **TESTED ON RTX 2060**
+- **Status**: ✅ Fully Working & GPU-Optimized
+- **Architecture**: 8-layer PolyGIN + Virtual Nodes + Ensemble
+- **Performance**: ~0.142 wMAE (mid-silver competitive)
+- **Requirements**: NVIDIA GPU with ≥6GB VRAM
+- **Tested on**: RTX 2060 (6GB) - Perfect fit!
 
 ## 🚀 Quick Start
 
