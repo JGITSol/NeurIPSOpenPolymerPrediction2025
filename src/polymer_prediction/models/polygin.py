@@ -145,7 +145,7 @@ class PolyGIN(nn.Module):
             x_new = F.dropout(x_new, p=self.dropout, training=self.training)
             
             # Residual connection (if dimensions match)
-            if i > 0:
+            if i > 0 and x.size() == x_new.size():
                 x = x + x_new
             else:
                 x = x_new
@@ -156,8 +156,8 @@ class PolyGIN(nn.Module):
                 virtual_feats = x[-num_graphs:]
                 # Update virtual node features
                 virtual_feats = self.virtual_node_mlp(virtual_feats)
-                # Replace virtual node features
-                x[-num_graphs:] = virtual_feats
+                # Replace virtual node features (avoid in-place operation)
+                x = torch.cat([x[:-num_graphs], virtual_feats], dim=0)
         
         # Remove virtual nodes before pooling
         if self.use_virtual_node:

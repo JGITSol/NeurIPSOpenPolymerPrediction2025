@@ -119,7 +119,8 @@ def smiles_to_enhanced_graph(smiles_string: str) -> Data:
     else:
         # Handle molecules with no bonds
         edge_index = torch.empty((2, 0), dtype=torch.long)
-        edge_attr = torch.empty((0, len(get_enhanced_bond_features(mol.GetBondWithIdx(0))) if mol.GetNumBonds() > 0 else 20), dtype=torch.float)
+        # Create empty edge attributes with correct dimension
+        edge_attr = torch.empty((0, 20), dtype=torch.float)  # 20 is the bond feature dimension
     
     # Create PyG Data object
     data = Data(x=x, edge_index=edge_index, edge_attr=edge_attr)
