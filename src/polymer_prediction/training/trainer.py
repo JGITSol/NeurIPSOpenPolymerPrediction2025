@@ -21,20 +21,21 @@ def masked_mse_loss(predictions, targets, masks):
     assert predictions.shape == targets.shape == masks.shape, f"Shape mismatch: pred {predictions.shape}, target {targets.shape}, mask {masks.shape}"
     
     # Only compute loss for non-missing values
-    masked_predictions = predictions * masks
-    masked_targets = targets * masks
+    # Use where to avoid multiplying by zero masks which can break gradients
+    valid_mask = masks > 0
     
-    # Calculate squared differences
-    squared_diff = (masked_predictions - masked_targets) ** 2
+    if valid_mask.sum() == 0:
+        # No valid targets, return zero loss
+        return torch.tensor(0.0, device=predictions.device, requires_grad=True)
     
-    # Sum over all dimensions and divide by number of non-missing values
-    total_loss = torch.sum(squared_diff)
-    total_count = torch.sum(masks)
+    # Extract only valid predictions and targets
+    valid_predictions = predictions[valid_mask]
+    valid_targets = targets[valid_mask]
     
-    if total_count > 0:
-        return total_loss / total_count
-    else:
-        return torch.tensor(0.0, device=predictions.device)
+    # Calculate MSE loss only for valid entries
+    loss = torch.mean((valid_predictions - valid_targets) ** 2)
+    
+    return loss
 
 
 def train_one_epoch(model, loader, optimizer, device):
@@ -144,7 +145,18 @@ def predict(model, loader, device):
         data = data.to(device)
         out = model(data)
         
-        all_ids.extend(data.id)
+        # Handle both tensor and scalar id cases
+        if hasattr(data, 'id'):
+            if torch.is_tensor(data.id):
+                all_ids.extend(data.id.tolist())
+            elif isinstance(data.id, (list, tuple)):
+                all_ids.extend(data.id)
+            else:
+                all_ids.append(data.id)
+        else:
+            # Fallback: use batch indices
+            batch_size = data.batch.max().item() + 1 if hasattr(data, 'batch') else 1
+            all_ids.extend(range(len(all_ids), len(all_ids) + batch_size))
         all_preds.append(out.cpu())
     
     predictions = torch.cat(all_preds, dim=0).numpy()
