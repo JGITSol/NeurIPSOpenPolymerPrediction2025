@@ -108,6 +108,11 @@ def smiles_to_graph(smiles_string):
 
     # Get atom features
     atom_features = [get_atom_features(atom) for atom in mol.GetAtoms()]
+    
+    # Handle empty molecules
+    if not atom_features:
+        return None
+    
     x = torch.tensor(atom_features, dtype=torch.float)
 
     # Get bond features and connectivity
@@ -130,7 +135,7 @@ def smiles_to_graph(smiles_string):
     else:
         # Handle molecules with no bonds (e.g., single atoms)
         edge_index = torch.empty((2, 0), dtype=torch.long)
-        edge_attr = torch.empty((0, 6), dtype=torch.float)  # Updated for new bond features
+        edge_attr = torch.empty((0, 7), dtype=torch.float)  # Updated for new bond features (2 + 5 = 7)
 
     # Create the PyG Data object
     data = Data(x=x, edge_index=edge_index, edge_attr=edge_attr)

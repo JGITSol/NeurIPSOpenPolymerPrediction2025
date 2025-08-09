@@ -1,8 +1,8 @@
 """
-Robust Polymer Prediction Pipeline with Enhanced Error Handling
+Robust Polymer Prediction Pipeline with Performance Optimization
 
-This module demonstrates the integration of comprehensive error handling
-and robustness features for the polymer prediction system.
+This module demonstrates the integration of comprehensive error handling,
+robustness features, and performance optimization for the polymer prediction system.
 """
 
 import sys
@@ -48,8 +48,24 @@ from polymer_prediction.utils.error_handling import (
 )
 from polymer_prediction.utils.logging import setup_logging, get_logger
 
+# Import performance optimization components
+from polymer_prediction.optimization import (
+    create_optimized_pipeline,
+    run_optimized_training,
+    PerformanceConfig
+)
+from polymer_prediction.utils.performance import (
+    PerformanceOptimizer,
+    GraphCache,
+    CPUOptimizer,
+    MemoryMonitor,
+    ProgressTracker
+)
+from polymer_prediction.data.optimized_dataloader import create_optimized_dataloader
+from polymer_prediction.training.optimized_trainer import create_optimized_trainer
+
 # Setup enhanced logging
-setup_logging(log_level="INFO", log_file="polymer_prediction_robust.log")
+setup_logging(log_level="INFO", log_file="logs/polymer_prediction_robust.log")
 logger = get_logger(__name__)
 
 
@@ -534,8 +550,8 @@ def predict_robust(model, loader, device):
 
 
 def main_robust():
-    """Main robust pipeline with comprehensive error handling."""
-    logger.info("Starting robust polymer prediction pipeline...")
+    """Main robust pipeline with comprehensive error handling and performance optimization."""
+    logger.info("Starting robust polymer prediction pipeline with performance optimization...")
     
     try:
         # Load data with error handling
@@ -544,24 +560,94 @@ def main_robust():
         if train_df is None or test_df is None:
             raise ValueError("Failed to load data")
         
-        # Train GCN with robust error handling
-        gcn_preds = train_gcn_robust(train_df, test_df)
-        
-        # Create submission with validation
-        submission = pd.DataFrame({'id': test_df['id']})
-        for i, col in enumerate(config.TARGET_COLS):
-            submission[col] = gcn_preds[:, i]
-        
-        # Validate submission format
-        required_cols = ['id'] + config.TARGET_COLS
-        submission = config.input_validator.validate_dataframe(
-            submission, required_cols, "Submission DataFrame"
+        # Create performance configuration
+        perf_config = PerformanceConfig(
+            enable_graph_cache=True,
+            enable_memory_monitoring=True,
+            enable_cpu_optimization=True,
+            enable_progress_tracking=True,
+            cache_dir="cache/robust_pipeline",
+            checkpoint_dir="checkpoints/robust_pipeline",
+            enable_performance_logging=True
         )
         
-        # Save submission
-        output_path = 'submission_robust.csv'
-        submission.to_csv(output_path, index=False)
-        logger.info(f"Robust submission saved to {output_path}")
+        logger.info("Using optimized pipeline for enhanced performance...")
+        
+        # Run optimized training pipeline
+        results = run_optimized_training(
+            train_df=train_df,
+            test_df=test_df,
+            target_cols=config.TARGET_COLS,
+            num_epochs=config.NUM_EPOCHS,
+            batch_size=None,  # Auto-optimized
+            learning_rate=config.LEARNING_RATE,
+            config=perf_config.__dict__,
+            output_dir="outputs/robust_optimized"
+        )
+        
+        # Extract predictions from results
+        if results['predictions'] and 'predictions' in results['predictions']:
+            gcn_preds = results['predictions']['predictions']
+            test_ids = results['predictions']['ids']
+            
+            # Create submission with validation
+            submission = pd.DataFrame({'id': test_ids})
+            for i, col in enumerate(config.TARGET_COLS):
+                if i < gcn_preds.shape[1]:
+                    submission[col] = gcn_preds[:, i]
+                else:
+                    submission[col] = 0.0  # Fallback value
+            
+            # Validate submission format
+            required_cols = ['id'] + config.TARGET_COLS
+            submission = config.input_validator.validate_dataframe(
+                submission, required_cols, "Submission DataFrame"
+            )
+            
+            # Save submission
+            output_path = 'submission_robust_optimized.csv'
+            submission.to_csv(output_path, index=False)
+            logger.info(f"Optimized robust submission saved to {output_path}")
+        else:
+            logger.warning("No predictions generated, falling back to basic robust training...")
+            # Fallback to original robust training
+            gcn_preds = train_gcn_robust(train_df, test_df)
+            
+            # Create submission with validation
+            submission = pd.DataFrame({'id': test_df['id']})
+            for i, col in enumerate(config.TARGET_COLS):
+                submission[col] = gcn_preds[:, i]
+            
+            # Validate submission format
+            required_cols = ['id'] + config.TARGET_COLS
+            submission = config.input_validator.validate_dataframe(
+                submission, required_cols, "Submission DataFrame"
+            )
+            
+            # Save submission
+            output_path = 'submission_robust_fallback.csv'
+            submission.to_csv(output_path, index=False)
+            logger.info(f"Fallback robust submission saved to {output_path}")
+        
+        # Print comprehensive results
+        if 'performance_report' in results:
+            perf_report = results['performance_report']
+            logger.info(f"Performance Report:")
+            logger.info(f"  System Info: {perf_report.get('system_info', {})}")
+            logger.info(f"  Cache Stats: Hit ratio = {perf_report.get('cache_stats', {}).get('hit_ratio', 0):.2%}")
+            
+            if 'memory_stats' in perf_report and perf_report['memory_stats']:
+                memory_stats = perf_report['memory_stats']
+                logger.info(f"  Memory Stats: Cleanup count = {memory_stats.get('cleanup_count', 0)}")
+        
+        # Print training results
+        if 'training_results' in results:
+            training_results = results['training_results']
+            logger.info(f"Training Results:")
+            logger.info(f"  Success: {training_results.get('success', False)}")
+            logger.info(f"  Epochs completed: {training_results.get('epochs_completed', 0)}")
+            logger.info(f"  Best loss: {training_results.get('best_loss', 'N/A')}")
+            logger.info(f"  Training duration: {training_results.get('training_duration', 0):.2f}s")
         
         # Print error summary
         error_summary = config.error_handler.get_error_summary()
@@ -571,11 +657,30 @@ def main_robust():
         device_info = config.device_manager.get_device_info()
         logger.info(f"Device info: {device_info}")
         
-        logger.info("Robust pipeline completed successfully!")
+        logger.info("Robust optimized pipeline completed successfully!")
         
     except Exception as e:
-        logger.error(f"Robust pipeline failed: {str(e)}")
+        logger.error(f"Robust optimized pipeline failed: {str(e)}")
+        import traceback
         logger.debug(f"Full traceback: {traceback.format_exc()}")
+        
+        # Fallback to basic robust training
+        logger.info("Attempting fallback to basic robust training...")
+        try:
+            train_df, test_df = load_data_robust()
+            gcn_preds = train_gcn_robust(train_df, test_df)
+            
+            # Create submission
+            submission = pd.DataFrame({'id': test_df['id']})
+            for i, col in enumerate(config.TARGET_COLS):
+                submission[col] = gcn_preds[:, i]
+            
+            output_path = 'submission_robust_emergency_fallback.csv'
+            submission.to_csv(output_path, index=False)
+            logger.info(f"Emergency fallback submission saved to {output_path}")
+            
+        except Exception as fallback_error:
+            logger.error(f"Fallback also failed: {fallback_error}")
         
         # Print final error summary
         error_summary = config.error_handler.get_error_summary()

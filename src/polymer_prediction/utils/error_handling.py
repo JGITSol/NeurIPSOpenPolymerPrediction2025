@@ -180,9 +180,13 @@ class ErrorHandler:
         
         # GPU memory if available
         if torch.cuda.is_available():
-            gpu_memory = torch.cuda.get_memory_stats()
-            memory_info['gpu_allocated_gb'] = gpu_memory.get('allocated_bytes.all.current', 0) / (1024**3)
-            memory_info['gpu_reserved_gb'] = gpu_memory.get('reserved_bytes.all.current', 0) / (1024**3)
+            try:
+                memory_info['gpu_allocated_gb'] = torch.cuda.memory_allocated() / (1024**3)
+                memory_info['gpu_reserved_gb'] = torch.cuda.memory_reserved() / (1024**3)
+            except Exception as e:
+                logger.debug(f"Could not get GPU memory info: {e}")
+                memory_info['gpu_allocated_gb'] = 0.0
+                memory_info['gpu_reserved_gb'] = 0.0
         
         return memory_info
     
