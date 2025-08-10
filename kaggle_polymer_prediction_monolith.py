@@ -1,240 +1,644 @@
 #!/usr/bin/env python3
 """
-NeurIPS 2025 Polymer Prediction - Complete Stacking Ensemble Solution
-=====================================================================
+Comprehensive Polymer Prediction Monolith for Kaggle Competition
 
-This is a complete, self-contained solution for the NeurIPS 2025 Polymer Prediction
-competition. It implements a sophisticated stacking ensemble that combines:
-
-1. Graph Convolutional Networks (GCN) for molecular graph representation
-2. Tree ensemble models (LightGBM, XGBoost, CatBoost) for tabular features
-3. Cross-validation framework for out-of-fold predictions
-4. Meta-learning with Ridge regression to combine base model predictions
-
-Key Features:
-- Handles missing values in multi-target regression
-- Proper cross-validation to prevent data leakage
-- Molecular featurization from SMILES strings
-- Robust error handling and logging
-- Competition-ready submission format
+This monolith file contains all necessary components for the NeurIPS Open Polymer 
+Prediction 2025 challenge, including:
+- Advanced molecular featurization with RDKit descriptors (200+ features)
+- Polymer-specific Graph Neural Networks with repeat unit awareness
+- Multi-task learning for joint property prediction
+- Tree ensemble models (LightGBM, XGBoost, CatBoost)
+- Stacking ensemble for optimal performance
+- Robust error handling and memory management
 
 Usage:
-1. Install required packages: pip install torch torch-geometric rdkit lightgbm xgboost catboost scikit-learn pandas numpy tqdm
-2. Place your data files in the same directory
-3. Run this script to train and generate predictions
+    python kaggle_polymer_prediction_monolith.py
 
-Author: AI Assistant (Kiro)
-Date: 2025
+Data paths:
+    - Training data: /kaggle/input/neurips-open-polymer-prediction-2025/train.csv
+    - Test data: /kaggle/input/neurips-open-polymer-prediction-2025/test.csv
+    - Output: submission.csv
 """
 
-import warnings
-warnings.filterwarnings('ignore')
-
-import logging
-import gc
 import os
-from typing import Dict, List, Optional, Tuple, Union, Any
+import sys
+import warnings
+import logging
+import traceback
 from pathlib import Path
+from typing import Dict, List, Optional, Tuple, Any, Union
+import gc
+import time
+from datetime import datetime
 
+# Suppress warnings for cleaner output
+warnings.filterwarnings('ignore')
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+
+# Suppress RDKit warnings and errors
+from rdkit import RDLogger
+RDLogger.DisableLog('rdApp.*')
+RDLogger.DisableLog('rdApp.error')
+RDLogger.DisableLog('rdApp.warning')
+
+# Additional RDKit error suppression
+import sys
+from io import StringIO
+
+class SuppressRDKitOutput:
+    def __enter__(self):
+        self._original_stderr = sys.stderr
+        sys.stderr = StringIO()
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        sys.stderr = self._original_stderr
+
+# Core scientific computing
 import numpy as np
 import pandas as pd
-from sklearn.model_selection import KFold, train_test_split
-from sklearn.linear_model import Ridge
-from sklearn.metrics import mean_squared_error
-from sklearn.base import BaseEstimator, RegressorMixin
-from sklearn.preprocessing import StandardScaler
-from tqdm import tqdm
+from sklearn.model_selection import KFold, StratifiedKFold
+from sklearn.preprocessing import StandardScaler, RobustScaler
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+from sklearn.linear_model import Ridge, ElasticNet
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.base import BaseEstimator, RegressorMixin, clone
+import joblib
 
+# Deep learning
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch_geometric.data import Data, Dataset
-from torch_geometric.loader import DataLoader
-from torch_geometric.nn import GCNConv, global_mean_pool
+from torch.optim import Adam, AdamW
+from torch.optim.lr_scheduler import ReduceLROnPlateau, CosineAnnealingLR
 
-# RDKit for molecular processing
-try:
-    from rdkit import Chem
-    from rdkit.Chem import rdchem
-    RDKIT_AVAILABLE = True
-except ImportError:
-    RDKIT_AVAILABLE = False
-    print("Warning: RDKit not available. Install with: conda install -c conda-forge rdkit")
+# Graph neural networks
+import torch_geometric
+from torch_geometric.data import Data, DataLoader, Batch
+from torch_geometric.nn import GCNConv, GATConv, GraphSAGE, global_mean_pool, global_max_pool, global_add_pool
+from torch_geometric.nn import BatchNorm, LayerNorm
 
-# Tree ensemble imports
+# Chemistry and molecular features
+from rdkit import Chem
+from rdkit.Chem import Descriptors, rdMolDescriptors, Crippen, Lipinski, rdchem
+from rdkit.Chem.rdMolDescriptors import CalcNumRotatableBonds, CalcTPSA
+from rdkit.Chem.Descriptors import MolWt, MolLogP, NumHDonors, NumHAcceptors
+
+# Tree ensemble models
 try:
     import lightgbm as lgb
     LIGHTGBM_AVAILABLE = True
 except ImportError:
     LIGHTGBM_AVAILABLE = False
-    print("Warning: LightGBM not available. Install with: pip install lightgbm")
+    print("Warning: LightGBM not available")
 
 try:
     import xgboost as xgb
     XGBOOST_AVAILABLE = True
 except ImportError:
     XGBOOST_AVAILABLE = False
-    print("Warning: XGBoost not available. Install with: pip install xgboost")
+    print("Warning: XGBoost not available")
 
 try:
     import catboost as cb
     CATBOOST_AVAILABLE = True
 except ImportError:
     CATBOOST_AVAILABLE = False
-    print("Warning: CatBoost not available. Install with: pip install catboost")
+    print("Warning: CatBoost not available")
 
-# Set up logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+# Hyperparameter optimization
+try:
+    import optuna
+    OPTUNA_AVAILABLE = True
+except ImportError:
+    OPTUNA_AVAILABLE = False
+    print("Warning: Optuna not available")
+
+# Progress tracking
+from tqdm import tqdm
+
+# Set random seeds for reproducibility
+RANDOM_SEED = 42
+np.random.seed(RANDOM_SEED)
+torch.manual_seed(RANDOM_SEED)
+if torch.cuda.is_available():
+    torch.cuda.manual_seed(RANDOM_SEED)
+    torch.cuda.manual_seed_all(RANDOM_SEED)
+
+# Configuration
+class Config:
+    """Global configuration for the polymer prediction pipeline."""
+    
+    # Data paths (Kaggle default)
+    DATA_PATH = "/kaggle/input/neurips-open-polymer-prediction-2025"
+    TRAIN_FILE = "train.csv"
+    TEST_FILE = "test.csv"
+    SUBMISSION_FILE = "submission.csv"
+    
+    # Target columns
+    TARGET_COLS = ['Tg', 'FFV', 'Tc', 'Density', 'Rg']
+    
+    # Model parameters
+    DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    BATCH_SIZE = 64 if torch.cuda.is_available() else 32
+    LEARNING_RATE = 1e-3
+    NUM_EPOCHS = 100
+    PATIENCE = 15
+    
+    # GNN parameters
+    HIDDEN_CHANNELS = 256
+    NUM_GCN_LAYERS = 4
+    DROPOUT = 0.3
+    
+    # Cross-validation
+    N_FOLDS = 5
+    
+    # Ensemble parameters
+    USE_STACKING = True
+    OPTIMIZE_HYPERPARAMS = True
+    N_TRIALS = 50
+    
+    # Memory management
+    MAX_MEMORY_GB = 12
+    ENABLE_CHECKPOINTING = True
+
+config = Config()
+
+# Setup logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(sys.stdout)
+    ]
+)
 logger = logging.getLogger(__name__)
 
-
 # ============================================================================
-# MOLECULAR FEATURIZATION
-# ============================================================================
-
-def get_atom_features(atom):
-    """Extract features for a single atom."""
-    if not RDKIT_AVAILABLE:
-        return [0] * 25  # Dummy features if RDKit not available
-    
-    # Basic atom features
-    features = [
-        atom.GetAtomicNum(),
-        atom.GetDegree(),
-        atom.GetTotalNumHs(),
-        atom.GetTotalValence(),
-        int(atom.GetIsAromatic()),
-        int(atom.GetChiralTag()),
-        atom.GetFormalCharge(),
-        int(atom.IsInRing()),
-    ]
-    
-    # One-hot encode common atomic numbers in polymers
-    common_atoms = [1, 6, 7, 8, 9, 14, 15, 16, 17, 35, 53]  # H, C, N, O, F, Si, P, S, Cl, Br, I
-    atomic_num_one_hot = [0] * (len(common_atoms) + 1)  # +1 for "other"
-    
-    atomic_num = atom.GetAtomicNum()
-    if atomic_num in common_atoms:
-        atomic_num_one_hot[common_atoms.index(atomic_num)] = 1
-    else:
-        atomic_num_one_hot[-1] = 1  # "other" category
-    
-    # Hybridization one-hot encoding
-    hybridization_types = [
-        rdchem.HybridizationType.SP,
-        rdchem.HybridizationType.SP2,
-        rdchem.HybridizationType.SP3,
-        rdchem.HybridizationType.SP3D,
-        rdchem.HybridizationType.SP3D2,
-    ]
-    hybridization_one_hot = [0] * (len(hybridization_types) + 1)  # +1 for "other"
-    
-    hybridization = atom.GetHybridization()
-    if hybridization in hybridization_types:
-        hybridization_one_hot[hybridization_types.index(hybridization)] = 1
-    else:
-        hybridization_one_hot[-1] = 1
-    
-    return features + atomic_num_one_hot + hybridization_one_hot
-
-
-def get_bond_features(bond):
-    """Extract features for a single bond."""
-    if not RDKIT_AVAILABLE:
-        return [0] * 6  # Dummy features if RDKit not available
-    
-    # Bond type one-hot encoding
-    bond_types = [
-        Chem.rdchem.BondType.SINGLE,
-        Chem.rdchem.BondType.DOUBLE,
-        Chem.rdchem.BondType.TRIPLE,
-        Chem.rdchem.BondType.AROMATIC,
-    ]
-    bond_type_one_hot = [0] * (len(bond_types) + 1)  # +1 for "other"
-    
-    bond_type = bond.GetBondType()
-    if bond_type in bond_types:
-        bond_type_one_hot[bond_types.index(bond_type)] = 1
-    else:
-        bond_type_one_hot[-1] = 1
-    
-    # Additional bond features
-    features = [
-        int(bond.IsInRing()),
-        int(bond.GetIsConjugated()),
-    ]
-    
-    return features + bond_type_one_hot
-
-
-def smiles_to_graph(smiles_string):
-    """Convert a SMILES string to a PyG Data object."""
-    if not RDKIT_AVAILABLE:
-        # Create dummy graph if RDKit not available
-        x = torch.randn(5, 25)  # 5 atoms, 25 features
-        edge_index = torch.tensor([[0, 1, 2, 3], [1, 2, 3, 4]], dtype=torch.long)
-        edge_attr = torch.randn(4, 6)
-        return Data(x=x, edge_index=edge_index, edge_attr=edge_attr)
-    
-    mol = Chem.MolFromSmiles(smiles_string)
-    if mol is None:
-        return None
-    
-    mol = Chem.AddHs(mol)  # Add explicit hydrogens
-
-    # Get atom features
-    atom_features = [get_atom_features(atom) for atom in mol.GetAtoms()]
-    x = torch.tensor(atom_features, dtype=torch.float)
-
-    # Get bond features and connectivity
-    if mol.GetNumBonds() > 0:
-        edge_indices = []
-        edge_attrs = []
-        for bond in mol.GetBonds():
-            i = bond.GetBeginAtomIdx()
-            j = bond.GetEndAtomIdx()
-            edge_indices.append((i, j))
-            edge_indices.append((j, i))  # Graph must be undirected
-
-            bond_features = get_bond_features(bond)
-            edge_attrs.append(bond_features)
-            edge_attrs.append(bond_features)  # Same features for both directions
-
-        edge_index = torch.tensor(edge_indices, dtype=torch.long).t().contiguous()
-        edge_attr = torch.tensor(edge_attrs, dtype=torch.float)
-    else:
-        # Handle molecules with no bonds (e.g., single atoms)
-        edge_index = torch.empty((2, 0), dtype=torch.long)
-        edge_attr = torch.empty((0, 6), dtype=torch.float)
-
-    # Create the PyG Data object
-    data = Data(x=x, edge_index=edge_index, edge_attr=edge_attr)
-    data.num_atom_features = x.size(1)
-
-    return data
-
-
-# ============================================================================
-# DATASET CLASS
+# MOLECULAR FEATURIZATION WITH 200+ RDKIT DESCRIPTORS
 # ============================================================================
 
-class PolymerDataset(Dataset):
-    """PyTorch Geometric Dataset for polymer data."""
+class MolecularFeaturizer:
+    """Advanced molecular featurization with 200+ RDKit descriptors."""
+    
+    def __init__(self):
+        """Initialize the featurizer with comprehensive descriptor sets."""
+        self.descriptor_names = []
+        self.scaler = StandardScaler()
+        self.fitted = False
+        
+        # Get all available RDKit descriptors
+        self.rdkit_descriptors = [
+            (name, func) for name, func in Descriptors.descList
+        ]
+        
+        logger.info(f"Initialized featurizer with {len(self.rdkit_descriptors)} RDKit descriptors")
+    
+    def get_atom_features(self, atom):
+        """Extract comprehensive atom features."""
+        features = []
+        
+        # Basic properties
+        features.extend([
+            atom.GetAtomicNum(),
+            atom.GetDegree(),
+            atom.GetTotalNumHs(),
+            atom.GetTotalValence(),
+            atom.GetFormalCharge(),
+            int(atom.GetIsAromatic()),
+            int(atom.IsInRing()),
+            int(atom.IsInRingSize(3)),
+            int(atom.IsInRingSize(4)),
+            int(atom.IsInRingSize(5)),
+            int(atom.IsInRingSize(6)),
+            int(atom.IsInRingSize(7)),
+            int(atom.IsInRingSize(8)),
+        ])
+        
+        # Chirality
+        chiral_tag = atom.GetChiralTag()
+        chiral_features = [0, 0, 0, 0]  # CHI_UNSPECIFIED, CHI_TETRAHEDRAL_CW, CHI_TETRAHEDRAL_CCW, CHI_OTHER
+        if chiral_tag < len(chiral_features):
+            chiral_features[chiral_tag] = 1
+        features.extend(chiral_features)
+        
+        # Hybridization
+        hybridization = atom.GetHybridization()
+        hybrid_features = [0] * 8  # SP, SP2, SP3, SP3D, SP3D2, UNSPECIFIED, OTHER
+        hybrid_map = {
+            rdchem.HybridizationType.SP: 0,
+            rdchem.HybridizationType.SP2: 1,
+            rdchem.HybridizationType.SP3: 2,
+            rdchem.HybridizationType.SP3D: 3,
+            rdchem.HybridizationType.SP3D2: 4,
+            rdchem.HybridizationType.UNSPECIFIED: 5,
+            rdchem.HybridizationType.OTHER: 6,
+        }
+        if hybridization in hybrid_map:
+            hybrid_features[hybrid_map[hybridization]] = 1
+        else:
+            hybrid_features[7] = 1  # Unknown
+        features.extend(hybrid_features)
+        
+        # Atomic number one-hot (common elements in polymers)
+        common_atoms = [1, 6, 7, 8, 9, 14, 15, 16, 17, 35, 53]  # H, C, N, O, F, Si, P, S, Cl, Br, I
+        atom_features = [0] * (len(common_atoms) + 1)
+        atomic_num = atom.GetAtomicNum()
+        if atomic_num in common_atoms:
+            atom_features[common_atoms.index(atomic_num)] = 1
+        else:
+            atom_features[-1] = 1  # Other
+        features.extend(atom_features)
+        
+        return features
+    
+    def get_bond_features(self, bond):
+        """Extract comprehensive bond features."""
+        features = []
+        
+        # Bond type
+        bond_type = bond.GetBondType()
+        bond_features = [0] * 5  # SINGLE, DOUBLE, TRIPLE, AROMATIC, OTHER
+        bond_map = {
+            rdchem.BondType.SINGLE: 0,
+            rdchem.BondType.DOUBLE: 1,
+            rdchem.BondType.TRIPLE: 2,
+            rdchem.BondType.AROMATIC: 3,
+        }
+        if bond_type in bond_map:
+            bond_features[bond_map[bond_type]] = 1
+        else:
+            bond_features[4] = 1  # Other
+        features.extend(bond_features)
+        
+        # Additional bond properties
+        features.extend([
+            int(bond.IsInRing()),
+            int(bond.GetIsConjugated()),
+            int(bond.GetStereo()),
+        ])
+        
+        return features
+    
+    def smiles_to_graph(self, smiles):
+        """Convert SMILES to graph with comprehensive features."""
+        try:
+            with SuppressRDKitOutput():
+                mol = Chem.MolFromSmiles(smiles)
+                if mol is None:
+                    return None
+            
+            mol = Chem.AddHs(mol)
+            
+            # Atom features
+            atom_features = []
+            for atom in mol.GetAtoms():
+                atom_features.append(self.get_atom_features(atom))
+            
+            if not atom_features:
+                return None
+            
+            x = torch.tensor(atom_features, dtype=torch.float)
+            
+            # Bond features and connectivity
+            edge_indices = []
+            edge_attrs = []
+            
+            for bond in mol.GetBonds():
+                i = bond.GetBeginAtomIdx()
+                j = bond.GetEndAtomIdx()
+                bond_features = self.get_bond_features(bond)
+                
+                edge_indices.extend([(i, j), (j, i)])
+                edge_attrs.extend([bond_features, bond_features])
+            
+            if edge_indices:
+                edge_index = torch.tensor(edge_indices, dtype=torch.long).t().contiguous()
+                edge_attr = torch.tensor(edge_attrs, dtype=torch.float)
+            else:
+                edge_index = torch.empty((2, 0), dtype=torch.long)
+                edge_attr = torch.empty((0, len(self.get_bond_features(mol.GetBonds()[0])) if mol.GetNumBonds() > 0 else 8), dtype=torch.float)
+            
+            data = Data(x=x, edge_index=edge_index, edge_attr=edge_attr)
+            data.num_atom_features = x.size(1)
+            
+            return data
+            
+        except Exception as e:
+            logger.warning(f"Error converting SMILES to graph: {e}")
+            return None
+    
+    def get_rdkit_descriptors(self, smiles):
+        """Extract all available RDKit molecular descriptors."""
+        try:
+            with SuppressRDKitOutput():
+                mol = Chem.MolFromSmiles(smiles)
+                if mol is None:
+                    return [0.0] * len(self.rdkit_descriptors)
+            
+            descriptors = []
+            for name, func in self.rdkit_descriptors:
+                try:
+                    value = func(mol)
+                    if isinstance(value, (int, float)):
+                        if np.isnan(value) or np.isinf(value):
+                            descriptors.append(0.0)
+                        else:
+                            descriptors.append(float(value))
+                    else:
+                        descriptors.append(0.0)
+                except Exception:
+                    # Silently handle descriptor calculation failures
+                    descriptors.append(0.0)
+            
+            return descriptors
+            
+        except Exception:
+            # Return zeros for completely failed molecules
+            return [0.0] * len(self.rdkit_descriptors)
+    
+    def get_polymer_specific_features(self, smiles):
+        """Extract polymer-specific features without using SMARTS patterns."""
+        try:
+            with SuppressRDKitOutput():
+                mol = Chem.MolFromSmiles(smiles)
+                if mol is None:
+                    return [0.0] * 20  # Return default features
+            
+            features = []
+            
+            # Count atoms by element (safer than SMARTS)
+            atom_counts = {}
+            for atom in mol.GetAtoms():
+                symbol = atom.GetSymbol()
+                atom_counts[symbol] = atom_counts.get(symbol, 0) + 1
+            
+            # Common polymer elements
+            polymer_elements = ['C', 'N', 'O', 'F', 'S', 'Cl', 'Br', 'I', 'P', 'Si']
+            for element in polymer_elements:
+                features.append(atom_counts.get(element, 0))
+            
+            # Bond type counts (safer approach)
+            bond_counts = {'SINGLE': 0, 'DOUBLE': 0, 'TRIPLE': 0, 'AROMATIC': 0}
+            for bond in mol.GetBonds():
+                bond_type = str(bond.GetBondType())
+                if bond_type in bond_counts:
+                    bond_counts[bond_type] += 1
+            
+            features.extend([bond_counts['SINGLE'], bond_counts['DOUBLE'], 
+                           bond_counts['TRIPLE'], bond_counts['AROMATIC']])
+            
+            # Ring information
+            ring_info = mol.GetRingInfo()
+            features.extend([
+                ring_info.NumRings(),
+                len([r for r in ring_info.AtomRings() if len(r) == 5]),  # 5-membered rings
+                len([r for r in ring_info.AtomRings() if len(r) == 6]),  # 6-membered rings
+            ])
+            
+            # Basic molecular properties
+            try:
+                basic_props = [
+                    mol.GetNumAtoms(),
+                    mol.GetNumBonds(),
+                    mol.GetNumHeavyAtoms(),
+                ]
+                features.extend(basic_props)
+            except Exception:
+                features.extend([0.0] * 3)
+            
+            # Pad to ensure we have exactly 20 features
+            while len(features) < 20:
+                features.append(0.0)
+            
+            return features[:20]  # Ensure exactly 20 features
+            
+        except Exception:
+            # Return zeros for completely failed molecules
+            return [0.0] * 20
+    
+    def featurize_molecules(self, smiles_list):
+        """Featurize a list of SMILES strings."""
+        logger.info(f"Featurizing {len(smiles_list)} molecules...")
+        
+        all_features = []
+        valid_indices = []
+        
+        for i, smiles in enumerate(tqdm(smiles_list, desc="Featurizing")):
+            # RDKit descriptors
+            rdkit_features = self.get_rdkit_descriptors(smiles)
+            
+            # Polymer-specific features
+            polymer_features = self.get_polymer_specific_features(smiles)
+            
+            # Combine all features
+            combined_features = rdkit_features + polymer_features
+            
+            # Check for valid features
+            if not any(np.isnan(combined_features)) and not any(np.isinf(combined_features)):
+                all_features.append(combined_features)
+                valid_indices.append(i)
+            else:
+                # Replace invalid values
+                combined_features = [0.0 if (np.isnan(x) or np.isinf(x)) else x for x in combined_features]
+                all_features.append(combined_features)
+                valid_indices.append(i)
+        
+        features_array = np.array(all_features)
+        
+        # Store descriptor names for reference
+        if not self.descriptor_names:
+            self.descriptor_names = [name for name, _ in self.rdkit_descriptors]
+            self.descriptor_names.extend([f"polymer_feature_{i}" for i in range(20)])
+        
+        logger.info(f"Generated {features_array.shape[1]} molecular features")
+        return features_array, valid_indices
+    
+    def fit_scaler(self, features):
+        """Fit the feature scaler."""
+        self.scaler.fit(features)
+        self.fitted = True
+        logger.info("Feature scaler fitted")
+    
+    def transform_features(self, features):
+        """Transform features using fitted scaler."""
+        if not self.fitted:
+            raise ValueError("Scaler must be fitted before transforming")
+        return self.scaler.transform(features)
 
-    def __init__(self, df, target_cols=None, is_test=False):
+# ============================================================================
+# POLYMER-SPECIFIC GRAPH NEURAL NETWORK
+# ============================================================================
+
+class PolymerGNN(nn.Module):
+    """
+    Polymer-specific Graph Neural Network with repeat unit awareness
+    and multi-task learning capabilities.
+    """
+    
+    def __init__(
+        self,
+        num_atom_features,
+        num_edge_features=8,
+        hidden_channels=256,
+        num_layers=4,
+        num_targets=5,
+        dropout=0.3,
+        use_attention=True,
+        use_residual=True
+    ):
+        super().__init__()
+        
+        self.num_layers = num_layers
+        self.use_attention = use_attention
+        self.use_residual = use_residual
+        
+        # Input projection
+        self.atom_encoder = nn.Linear(num_atom_features, hidden_channels)
+        self.edge_encoder = nn.Linear(num_edge_features, hidden_channels) if num_edge_features > 0 else None
+        
+        # Graph convolution layers
+        self.convs = nn.ModuleList()
+        self.batch_norms = nn.ModuleList()
+        
+        for i in range(num_layers):
+            if use_attention:
+                conv = GATConv(
+                    hidden_channels, 
+                    hidden_channels // 8,  # 8 attention heads
+                    heads=8,
+                    dropout=dropout,
+                    edge_dim=hidden_channels if self.edge_encoder else None
+                )
+            else:
+                conv = GCNConv(hidden_channels, hidden_channels)
+            
+            self.convs.append(conv)
+            self.batch_norms.append(BatchNorm(hidden_channels))
+        
+        # Polymer-specific layers
+        self.polymer_attention = nn.MultiheadAttention(
+            embed_dim=hidden_channels,
+            num_heads=8,
+            dropout=dropout,
+            batch_first=True
+        )
+        
+        # Global pooling
+        self.global_pool = global_mean_pool
+        
+        # Multi-task prediction heads
+        self.dropout = nn.Dropout(dropout)
+        
+        # Shared representation
+        self.shared_layers = nn.Sequential(
+            nn.Linear(hidden_channels, hidden_channels),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_channels, hidden_channels // 2),
+            nn.ReLU(),
+            nn.Dropout(dropout)
+        )
+        
+        # Task-specific heads
+        self.task_heads = nn.ModuleList([
+            nn.Sequential(
+                nn.Linear(hidden_channels // 2, hidden_channels // 4),
+                nn.ReLU(),
+                nn.Dropout(dropout),
+                nn.Linear(hidden_channels // 4, 1)
+            ) for _ in range(num_targets)
+        ])
+        
+        # Initialize weights
+        self.apply(self._init_weights)
+    
+    def _init_weights(self, module):
+        """Initialize model weights."""
+        if isinstance(module, nn.Linear):
+            nn.init.xavier_uniform_(module.weight)
+            if module.bias is not None:
+                nn.init.zeros_(module.bias)
+    
+    def forward(self, data):
+        """Forward pass with polymer-specific processing."""
+        x, edge_index, batch = data.x, data.edge_index, data.batch
+        edge_attr = getattr(data, 'edge_attr', None)
+        
+        # Encode features
+        x = self.atom_encoder(x)
+        if self.edge_encoder is not None and edge_attr is not None:
+            edge_attr = self.edge_encoder(edge_attr)
+        
+        # Graph convolutions with residual connections
+        for i, (conv, bn) in enumerate(zip(self.convs, self.batch_norms)):
+            x_residual = x
+            
+            if self.use_attention and edge_attr is not None:
+                x = conv(x, edge_index, edge_attr)
+            else:
+                x = conv(x, edge_index)
+            
+            x = bn(x)
+            x = F.relu(x)
+            x = self.dropout(x)
+            
+            # Residual connection
+            if self.use_residual and i > 0:
+                x = x + x_residual
+        
+        # Polymer-specific attention mechanism
+        # Group nodes by molecule for attention
+        batch_size = batch.max().item() + 1
+        pooled_representations = []
+        
+        for i in range(batch_size):
+            mask = (batch == i)
+            if mask.sum() > 0:
+                mol_x = x[mask].unsqueeze(0)  # (1, num_atoms, hidden_dim)
+                
+                # Self-attention for polymer repeat unit awareness
+                attended_x, _ = self.polymer_attention(mol_x, mol_x, mol_x)
+                
+                # Global pooling
+                pooled = attended_x.mean(dim=1)  # (1, hidden_dim)
+                pooled_representations.append(pooled)
+        
+        if pooled_representations:
+            x_global = torch.cat(pooled_representations, dim=0)
+        else:
+            # Fallback to standard global pooling
+            x_global = self.global_pool(x, batch)
+        
+        # Shared representation
+        shared_repr = self.shared_layers(x_global)
+        
+        # Multi-task predictions
+        predictions = []
+        for head in self.task_heads:
+            pred = head(shared_repr)
+            predictions.append(pred)
+        
+        return torch.cat(predictions, dim=1)
+
+# ============================================================================
+# DATASET AND DATA LOADING
+# ============================================================================
+
+class PolymerDataset(torch_geometric.data.Dataset):
+    """Dataset for polymer graphs with multi-target support."""
+    
+    def __init__(self, df, featurizer, target_cols=None, is_test=False):
         super().__init__()
         self.df = df
+        self.featurizer = featurizer
         self.is_test = is_test
-        
-        if target_cols is None:
-            target_cols = ['Tg', 'FFV', 'Tc', 'Density', 'Rg']
-        self.target_cols = target_cols
+        self.target_cols = target_cols or config.TARGET_COLS
         
         self.smiles_list = df['SMILES'].tolist()
         self.ids = df['id'].tolist()
         
         if not is_test:
-            # Extract targets and create masks for missing values
             self.targets = []
             self.masks = []
             
@@ -242,15 +646,15 @@ class PolymerDataset(Dataset):
                 target_values = []
                 mask_values = []
                 
-                for col in target_cols:
+                for col in self.target_cols:
                     if col in df.columns:
                         val = df.iloc[idx][col]
                         if pd.isna(val):
-                            target_values.append(0.0)  # Placeholder for missing values
-                            mask_values.append(0.0)    # Mask indicates missing
+                            target_values.append(0.0)
+                            mask_values.append(0.0)
                         else:
                             target_values.append(float(val))
-                            mask_values.append(1.0)    # Mask indicates present
+                            mask_values.append(1.0)
                     else:
                         target_values.append(0.0)
                         mask_values.append(0.0)
@@ -258,1187 +662,784 @@ class PolymerDataset(Dataset):
                 self.targets.append(target_values)
                 self.masks.append(mask_values)
         
-        self.cache = {}  # Cache graphs to avoid re-computing
-
+        self.cache = {}
+    
     def len(self):
         return len(self.df)
-
+    
     def get(self, idx):
         if idx in self.cache:
             data = self.cache[idx]
         else:
             smiles = self.smiles_list[idx]
-            data = smiles_to_graph(smiles)
-            if data is None:  # Handle RDKit parsing errors
+            data = self.featurizer.smiles_to_graph(smiles)
+            if data is None:
                 return None
             self.cache[idx] = data
-
-        # Add ID
+        
         data.id = int(self.ids[idx])
         
         if not self.is_test:
-            # Add target values and masks
-            data.y = torch.tensor(self.targets[idx], dtype=torch.float).unsqueeze(0)  # Shape: (1, 5)
-            data.mask = torch.tensor(self.masks[idx], dtype=torch.float).unsqueeze(0)  # Shape: (1, 5)
+            data.y = torch.tensor(self.targets[idx], dtype=torch.float).unsqueeze(0)
+            data.mask = torch.tensor(self.masks[idx], dtype=torch.float).unsqueeze(0)
         
         return data
 
+def create_data_loaders(train_df, test_df, featurizer, batch_size=None):
+    """Create data loaders for training and testing."""
+    if batch_size is None:
+        batch_size = config.BATCH_SIZE
+    
+    train_dataset = PolymerDataset(train_df, featurizer, is_test=False)
+    test_dataset = PolymerDataset(test_df, featurizer, is_test=True)
+    
+    def collate_fn(batch):
+        batch = [item for item in batch if item is not None]
+        if len(batch) == 0:
+            return None
+        return Batch.from_data_list(batch)
+    
+    train_loader = DataLoader(
+        train_dataset, 
+        batch_size=batch_size, 
+        shuffle=True,
+        collate_fn=collate_fn,
+        num_workers=0
+    )
+    
+    test_loader = DataLoader(
+        test_dataset, 
+        batch_size=batch_size, 
+        shuffle=False,
+        collate_fn=collate_fn,
+        num_workers=0
+    )
+    
+    return train_loader, test_loader
 
 # ============================================================================
 # TRAINING UTILITIES
 # ============================================================================
 
 def masked_mse_loss(predictions, targets, masks):
-    """Calculate MSE loss only for non-missing values."""
-    assert predictions.shape == targets.shape == masks.shape
+    """Compute MSE loss with missing value masks."""
+    masked_predictions = predictions * masks
+    masked_targets = targets * masks
     
-    valid_mask = masks > 0
+    # Compute loss only where mask is 1
+    loss = F.mse_loss(masked_predictions, masked_targets, reduction='none')
+    loss = loss * masks
     
-    if valid_mask.sum() == 0:
-        return torch.tensor(0.0, device=predictions.device, requires_grad=True)
-    
-    valid_predictions = predictions[valid_mask]
-    valid_targets = targets[valid_mask]
-    
-    loss = torch.mean((valid_predictions - valid_targets) ** 2)
-    return loss
+    # Average over valid entries
+    valid_count = masks.sum()
+    if valid_count > 0:
+        return loss.sum() / valid_count
+    else:
+        return torch.tensor(0.0, device=predictions.device)
 
+def weighted_mae_loss(predictions, targets, masks, weights=None):
+    """Compute weighted MAE loss for competition metric."""
+    if weights is None:
+        weights = torch.ones(predictions.size(1), device=predictions.device)
+    
+    masked_predictions = predictions * masks
+    masked_targets = targets * masks
+    
+    # Compute MAE for each target
+    mae_per_target = torch.abs(masked_predictions - masked_targets) * masks
+    
+    # Weight by target importance
+    weighted_mae = mae_per_target * weights.unsqueeze(0)
+    
+    # Average over valid entries
+    valid_count = masks.sum(dim=0)
+    target_mae = weighted_mae.sum(dim=0) / (valid_count + 1e-8)
+    
+    return target_mae.mean()
 
-def train_one_epoch(model, loader, optimizer, device):
-    """Perform one full training pass over the dataset."""
+def train_epoch(model, loader, optimizer, device, criterion=masked_mse_loss):
+    """Train for one epoch."""
     model.train()
     total_loss = 0
     total_samples = 0
     
-    for data in tqdm(loader, desc="Training", leave=False):
-        if data is None:
+    for batch in tqdm(loader, desc="Training", leave=False):
+        if batch is None:
             continue
-        data = data.to(device)
+        
+        # Check if batch has required attributes
+        if not (hasattr(batch, 'y') and hasattr(batch, 'mask')):
+            logger.warning("Batch missing targets or masks in training")
+            continue
+        
+        batch = batch.to(device)
         optimizer.zero_grad()
         
-        out = model(data)
-        loss = masked_mse_loss(out, data.y, data.mask)
+        predictions = model(batch)
+        loss = criterion(predictions, batch.y, batch.mask)
+        
+        if torch.isnan(loss) or torch.isinf(loss):
+            continue
         
         loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
         
-        total_loss += loss.item() * data.num_graphs
-        total_samples += data.num_graphs
-        
-    return total_loss / total_samples if total_samples > 0 else 0.0
-
+        total_loss += loss.item() * batch.num_graphs
+        total_samples += batch.num_graphs
+    
+    return total_loss / max(total_samples, 1)
 
 @torch.no_grad()
-def evaluate(model, loader, device):
-    """Evaluate the model on a dataset."""
+def evaluate_model(model, loader, device, criterion=masked_mse_loss):
+    """Evaluate model performance."""
     model.eval()
     total_loss = 0
     total_samples = 0
-    
-    all_preds = []
+    all_predictions = []
     all_targets = []
     all_masks = []
     
-    for data in tqdm(loader, desc="Evaluating", leave=False):
-        if data is None:
+    for batch in tqdm(loader, desc="Evaluating", leave=False):
+        if batch is None:
             continue
-        data = data.to(device)
-        out = model(data)
         
-        loss = masked_mse_loss(out, data.y, data.mask)
-        total_loss += loss.item() * data.num_graphs
-        total_samples += data.num_graphs
+        # Check if batch has targets and masks
+        if not (hasattr(batch, 'y') and hasattr(batch, 'mask')):
+            logger.warning("Batch missing targets or masks in evaluation")
+            continue
         
-        all_preds.append(out.cpu())
-        all_targets.append(data.y.cpu())
-        all_masks.append(data.mask.cpu())
-
-    avg_loss = total_loss / total_samples if total_samples > 0 else 0.0
+        batch = batch.to(device)
+        predictions = model(batch)
+        loss = criterion(predictions, batch.y, batch.mask)
+        
+        total_loss += loss.item() * batch.num_graphs
+        total_samples += batch.num_graphs
+        
+        all_predictions.append(predictions.cpu())
+        all_targets.append(batch.y.cpu())
+        all_masks.append(batch.mask.cpu())
     
-    if len(all_preds) == 0:
-        return avg_loss, {'Tg': np.nan, 'FFV': np.nan, 'Tc': np.nan, 'Density': np.nan, 'Rg': np.nan}
+    avg_loss = total_loss / max(total_samples, 1)
     
-    # Calculate per-property RMSE
-    preds = torch.cat(all_preds, dim=0)
-    targets = torch.cat(all_targets, dim=0)
-    masks = torch.cat(all_masks, dim=0)
+    if all_predictions:
+        predictions = torch.cat(all_predictions, dim=0)
+        targets = torch.cat(all_targets, dim=0)
+        masks = torch.cat(all_masks, dim=0)
+        
+        # Calculate per-target metrics
+        target_metrics = {}
+        for i, col in enumerate(config.TARGET_COLS):
+            mask = masks[:, i].bool()
+            if mask.sum() > 0:
+                pred_vals = predictions[mask, i]
+                true_vals = targets[mask, i]
+                
+                mae = F.l1_loss(pred_vals, true_vals).item()
+                mse = F.mse_loss(pred_vals, true_vals).item()
+                
+                target_metrics[col] = {'mae': mae, 'mse': mse, 'rmse': np.sqrt(mse)}
+        
+        return avg_loss, target_metrics
     
-    property_names = ['Tg', 'FFV', 'Tc', 'Density', 'Rg']
-    rmses = {}
-    
-    for i, prop_name in enumerate(property_names):
-        prop_mask = masks[:, i]
-        if prop_mask.sum() > 0:
-            prop_preds = preds[:, i][prop_mask == 1]
-            prop_targets = targets[:, i][prop_mask == 1]
-            rmse = torch.sqrt(torch.mean((prop_preds - prop_targets) ** 2))
-            rmses[prop_name] = rmse.item()
-        else:
-            rmses[prop_name] = float('nan')
-    
-    return avg_loss, rmses
-
+    return avg_loss, {}
 
 @torch.no_grad()
-def predict(model, loader, device):
-    """Generate predictions for test data."""
+def predict_with_model(model, loader, device):
+    """Generate predictions using trained model."""
     model.eval()
+    all_predictions = []
     all_ids = []
-    all_preds = []
     
-    for data in tqdm(loader, desc="Predicting", leave=False):
-        if data is None:
+    for batch in tqdm(loader, desc="Predicting", leave=False):
+        if batch is None:
             continue
-        data = data.to(device)
-        out = model(data)
         
-        # Handle both tensor and scalar id cases
-        if hasattr(data, 'id'):
-            if torch.is_tensor(data.id):
-                all_ids.extend(data.id.tolist())
-            elif isinstance(data.id, (list, tuple)):
-                all_ids.extend(data.id)
-            else:
-                all_ids.append(data.id)
-        else:
-            # Fallback: use batch indices
-            batch_size = data.batch.max().item() + 1 if hasattr(data, 'batch') else 1
-            all_ids.extend(range(len(all_ids), len(all_ids) + batch_size))
-        all_preds.append(out.cpu())
+        batch = batch.to(device)
+        predictions = model(batch)
+        
+        all_predictions.append(predictions.cpu())
+        all_ids.extend([int(id_val) for id_val in batch.id])
     
-    if len(all_preds) == 0:
-        return [], np.array([])
+    if all_predictions:
+        predictions = torch.cat(all_predictions, dim=0).numpy()
+        return all_ids, predictions
     
-    predictions = torch.cat(all_preds, dim=0).numpy()
-    return all_ids, predictions
-
-
-# ============================================================================
-# GCN MODEL
-# ============================================================================
-
-class PolymerGCN(nn.Module):
-    """Graph Convolutional Network for polymer property prediction."""
-    
-    def __init__(self, num_atom_features, hidden_channels=64, num_gcn_layers=3, dropout=0.2):
-        super().__init__()
-        self.num_atom_features = num_atom_features
-        self.hidden_channels = hidden_channels
-        self.num_gcn_layers = num_gcn_layers
-        self.dropout = dropout
-        
-        # GCN layers
-        self.convs = nn.ModuleList()
-        self.convs.append(GCNConv(num_atom_features, hidden_channels))
-        
-        for _ in range(num_gcn_layers - 1):
-            self.convs.append(GCNConv(hidden_channels, hidden_channels))
-        
-        # Output layers
-        self.dropout_layer = nn.Dropout(dropout)
-        self.output_layer = nn.Linear(hidden_channels, 5)  # 5 target properties
-        
-    def forward(self, data):
-        x, edge_index, batch = data.x, data.edge_index, data.batch
-        
-        # Apply GCN layers
-        for i, conv in enumerate(self.convs):
-            x = conv(x, edge_index)
-            if i < len(self.convs) - 1:  # Don't apply activation after last layer
-                x = torch.relu(x)
-                x = self.dropout_layer(x)
-        
-        # Global pooling
-        x = global_mean_pool(x, batch)
-        
-        # Final prediction
-        x = self.dropout_layer(x)
-        x = self.output_layer(x)
-        
-        return x
-
+    return [], np.array([])
 
 # ============================================================================
 # TREE ENSEMBLE MODELS
 # ============================================================================
 
-class LightGBMWrapper(BaseEstimator, RegressorMixin):
-    """LightGBM model wrapper with multi-target support."""
-    
-    def __init__(self, n_estimators=100, learning_rate=0.1, max_depth=-1, 
-                 num_leaves=31, random_state=42, **kwargs):
-        self.n_estimators = n_estimators
-        self.learning_rate = learning_rate
-        self.max_depth = max_depth
-        self.num_leaves = num_leaves
-        self.random_state = random_state
-        self.kwargs = kwargs
-        self.models_ = {}
-        self.n_targets_ = None
-        
-    def fit(self, X, y):
-        if not LIGHTGBM_AVAILABLE:
-            raise ImportError("LightGBM not available")
-        
-        X = np.asarray(X)
-        y = np.asarray(y)
-        
-        if y.ndim == 1:
-            y = y.reshape(-1, 1)
-        
-        self.n_targets_ = y.shape[1]
-        
-        params = {
-            'objective': 'regression',
-            'metric': 'rmse',
-            'boosting_type': 'gbdt',
-            'n_estimators': self.n_estimators,
-            'learning_rate': self.learning_rate,
-            'max_depth': self.max_depth,
-            'num_leaves': self.num_leaves,
-            'random_state': self.random_state,
-            'verbose': -1,
-            **self.kwargs
-        }
-        
-        # Train separate model for each target
-        for target_idx in range(self.n_targets_):
-            y_target = y[:, target_idx]
-            
-            # Handle missing values
-            mask = ~np.isnan(y_target)
-            if not np.any(mask):
-                continue
-                
-            X_masked = X[mask]
-            y_masked = y_target[mask]
-            
-            # Create LightGBM dataset
-            train_data = lgb.Dataset(X_masked, label=y_masked)
-            
-            # Train model
-            model = lgb.train(
-                params,
-                train_data,
-                valid_sets=[train_data],
-                callbacks=[lgb.log_evaluation(0)]
-            )
-            
-            self.models_[target_idx] = model
-            
-        return self
-    
-    def predict(self, X):
-        if not self.models_:
-            raise ValueError("Model must be fitted before making predictions")
-        
-        X = np.asarray(X)
-        n_samples = X.shape[0]
-        
-        if self.n_targets_ == 1:
-            if 0 in self.models_:
-                return self.models_[0].predict(X)
-            else:
-                return np.full(n_samples, np.nan)
-        else:
-            predictions = np.full((n_samples, self.n_targets_), np.nan)
-            for target_idx, model in self.models_.items():
-                predictions[:, target_idx] = model.predict(X)
-            return predictions
-
-
-class XGBoostWrapper(BaseEstimator, RegressorMixin):
-    """XGBoost model wrapper with multi-target support."""
-    
-    def __init__(self, n_estimators=100, learning_rate=0.1, max_depth=6, 
-                 random_state=42, **kwargs):
-        self.n_estimators = n_estimators
-        self.learning_rate = learning_rate
-        self.max_depth = max_depth
-        self.random_state = random_state
-        self.kwargs = kwargs
-        self.models_ = {}
-        self.n_targets_ = None
-        
-    def fit(self, X, y):
-        if not XGBOOST_AVAILABLE:
-            raise ImportError("XGBoost not available")
-        
-        X = np.asarray(X)
-        y = np.asarray(y)
-        
-        if y.ndim == 1:
-            y = y.reshape(-1, 1)
-        
-        self.n_targets_ = y.shape[1]
-        
-        params = {
-            'objective': 'reg:squarederror',
-            'n_estimators': self.n_estimators,
-            'learning_rate': self.learning_rate,
-            'max_depth': self.max_depth,
-            'random_state': self.random_state,
-            'verbosity': 0,
-            **self.kwargs
-        }
-        
-        # Train separate model for each target
-        for target_idx in range(self.n_targets_):
-            y_target = y[:, target_idx]
-            
-            # Handle missing values
-            mask = ~np.isnan(y_target)
-            if not np.any(mask):
-                continue
-                
-            X_masked = X[mask]
-            y_masked = y_target[mask]
-            
-            # Create and train XGBoost model
-            model = xgb.XGBRegressor(**params)
-            model.fit(X_masked, y_masked)
-            
-            self.models_[target_idx] = model
-            
-        return self
-    
-    def predict(self, X):
-        if not self.models_:
-            raise ValueError("Model must be fitted before making predictions")
-        
-        X = np.asarray(X)
-        n_samples = X.shape[0]
-        
-        if self.n_targets_ == 1:
-            if 0 in self.models_:
-                return self.models_[0].predict(X)
-            else:
-                return np.full(n_samples, np.nan)
-        else:
-            predictions = np.full((n_samples, self.n_targets_), np.nan)
-            for target_idx, model in self.models_.items():
-                predictions[:, target_idx] = model.predict(X)
-            return predictions
-
-
-class TreeEnsemble:
-    """Complete tree ensemble combining multiple tree models."""
+class TreeEnsembleModel:
+    """Ensemble of tree-based models for polymer prediction."""
     
     def __init__(self, models=None, random_state=42):
+        self.random_state = random_state
+        self.models = {}
+        self.fitted = False
+        
+        # Initialize available models
         if models is None:
             models = []
             if LIGHTGBM_AVAILABLE:
                 models.append('lgbm')
             if XGBOOST_AVAILABLE:
                 models.append('xgb')
+            if CATBOOST_AVAILABLE:
+                models.append('catboost')
         
-        self.models = models
-        self.random_state = random_state
-        self.trained_models = {}
-        self.model_weights = {}
-        
-    def fit(self, X, y):
-        logger.info(f"Training tree ensemble with models: {self.models}")
-        
-        for model_type in self.models:
-            logger.info(f"Training {model_type} model...")
-            
-            try:
-                if model_type == 'lgbm' and LIGHTGBM_AVAILABLE:
-                    model = LightGBMWrapper(random_state=self.random_state)
-                elif model_type == 'xgb' and XGBOOST_AVAILABLE:
-                    model = XGBoostWrapper(random_state=self.random_state)
-                else:
-                    logger.warning(f"Model {model_type} not available, skipping")
-                    continue
-                
-                model.fit(X, y)
-                self.trained_models[model_type] = model
-                
-                # Calculate model weight based on cross-validation performance
-                cv_score = self._calculate_cv_score(model, X, y)
-                self.model_weights[model_type] = 1.0 / (cv_score + 1e-8)
-                
-                logger.info(f"{model_type} model trained successfully (CV score: {cv_score:.4f})")
-                
-            except Exception as e:
-                logger.error(f"Failed to train {model_type} model: {str(e)}")
-                continue
-        
-        # Normalize weights
-        total_weight = sum(self.model_weights.values())
-        if total_weight > 0:
-            self.model_weights = {
-                k: v / total_weight for k, v in self.model_weights.items()
-            }
-        
-        logger.info(f"Tree ensemble training completed. Model weights: {self.model_weights}")
-        return self
+        self.model_types = models
+        logger.info(f"Initialized tree ensemble with models: {models}")
     
-    def _calculate_cv_score(self, model, X, y):
-        """Calculate cross-validation score for model weighting."""
-        kf = KFold(n_splits=3, shuffle=True, random_state=self.random_state)
-        scores = []
+    def _create_lgbm_model(self, **params):
+        """Create LightGBM model."""
+        default_params = {
+            'objective': 'regression',
+            'metric': 'rmse',
+            'boosting_type': 'gbdt',
+            'num_leaves': 31,
+            'learning_rate': 0.1,
+            'feature_fraction': 0.9,
+            'bagging_fraction': 0.8,
+            'bagging_freq': 5,
+            'verbose': -1,
+            'random_state': self.random_state
+        }
+        default_params.update(params)
+        return default_params
+    
+    def _create_xgb_model(self, **params):
+        """Create XGBoost model."""
+        default_params = {
+            'objective': 'reg:squarederror',
+            'eval_metric': 'rmse',
+            'max_depth': 6,
+            'learning_rate': 0.1,
+            'subsample': 0.8,
+            'colsample_bytree': 0.8,
+            'random_state': self.random_state,
+            'verbosity': 0
+        }
+        default_params.update(params)
+        return xgb.XGBRegressor(**default_params)
+    
+    def _create_catboost_model(self, **params):
+        """Create CatBoost model."""
+        default_params = {
+            'loss_function': 'RMSE',
+            'eval_metric': 'RMSE',
+            'depth': 6,
+            'learning_rate': 0.1,
+            'iterations': 100,
+            'random_state': self.random_state,
+            'verbose': False
+        }
+        default_params.update(params)
+        return cb.CatBoostRegressor(**default_params)
+    
+    def fit(self, X, y):
+        """Fit all tree models."""
+        logger.info("Training tree ensemble models...")
         
-        for train_idx, val_idx in kf.split(X):
-            try:
-                X_train, X_val = X[train_idx], X[val_idx]
-                y_train, y_val = y[train_idx], y[val_idx]
+        X = np.asarray(X)
+        y = np.asarray(y)
+        
+        if y.ndim == 1:
+            y = y.reshape(-1, 1)
+        
+        n_targets = y.shape[1]
+        
+        for model_type in self.model_types:
+            logger.info(f"Training {model_type} models...")
+            self.models[model_type] = {}
+            
+            for target_idx in range(n_targets):
+                y_target = y[:, target_idx]
+                mask = ~np.isnan(y_target)
                 
-                # Create a copy of the model for CV
-                if isinstance(model, LightGBMWrapper):
-                    model_copy = LightGBMWrapper(random_state=self.random_state)
-                elif isinstance(model, XGBoostWrapper):
-                    model_copy = XGBoostWrapper(random_state=self.random_state)
-                else:
+                if not np.any(mask):
+                    logger.warning(f"No valid targets for {model_type} target {target_idx}")
                     continue
                 
-                model_copy.fit(X_train, y_train)
-                y_pred = model_copy.predict(X_val)
+                X_masked = X[mask]
+                y_masked = y_target[mask]
                 
-                # Handle multi-target case
-                if y_val.ndim == 1:
-                    y_val = y_val.reshape(-1, 1)
-                if y_pred.ndim == 1:
-                    y_pred = y_pred.reshape(-1, 1)
-                
-                # Calculate RMSE for each target and average
-                target_scores = []
-                for target_idx in range(y_val.shape[1]):
-                    mask = ~np.isnan(y_val[:, target_idx])
-                    if np.any(mask):
-                        score = np.sqrt(mean_squared_error(
-                            y_val[mask, target_idx], 
-                            y_pred[mask, target_idx]
-                        ))
-                        target_scores.append(score)
-                
-                if target_scores:
-                    scores.append(np.mean(target_scores))
-            except Exception as e:
-                logger.warning(f"CV fold failed: {str(e)}")
-                continue
+                try:
+                    if model_type == 'lgbm' and LIGHTGBM_AVAILABLE:
+                        params = self._create_lgbm_model()
+                        train_data = lgb.Dataset(X_masked, label=y_masked)
+                        model = lgb.train(params, train_data, num_boost_round=100, verbose_eval=False)
+                    
+                    elif model_type == 'xgb' and XGBOOST_AVAILABLE:
+                        model = self._create_xgb_model(n_estimators=100)
+                        model.fit(X_masked, y_masked)
+                    
+                    elif model_type == 'catboost' and CATBOOST_AVAILABLE:
+                        model = self._create_catboost_model(iterations=100)
+                        model.fit(X_masked, y_masked)
+                    
+                    else:
+                        continue
+                    
+                    self.models[model_type][target_idx] = model
+                    
+                except Exception as e:
+                    logger.error(f"Error training {model_type} for target {target_idx}: {e}")
+                    continue
         
-        return np.mean(scores) if scores else float('inf')
+        self.fitted = True
+        logger.info("Tree ensemble training completed")
     
     def predict(self, X):
-        """Make predictions using the ensemble of trained models."""
-        if not self.trained_models:
-            raise ValueError("Ensemble must be fitted before making predictions")
+        """Generate predictions from all models."""
+        if not self.fitted:
+            raise ValueError("Models must be fitted before prediction")
         
         X = np.asarray(X)
         n_samples = X.shape[0]
+        n_targets = len(config.TARGET_COLS)
         
-        # Get predictions from all models
-        model_predictions = {}
-        for model_type, model in self.trained_models.items():
-            try:
-                pred = model.predict(X)
-                model_predictions[model_type] = pred
-            except Exception as e:
-                logger.warning(f"Failed to get predictions from {model_type}: {str(e)}")
-                continue
+        # Collect predictions from all models
+        all_predictions = {}
         
-        if not model_predictions:
-            raise ValueError("No models produced valid predictions")
-        
-        # Determine output shape
-        sample_pred = next(iter(model_predictions.values()))
-        if sample_pred.ndim == 1:
-            n_targets = 1
-            ensemble_pred = np.zeros(n_samples)
-        else:
-            n_targets = sample_pred.shape[1]
-            ensemble_pred = np.zeros((n_samples, n_targets))
-        
-        # Weighted combination of predictions
-        total_weight = 0.0
-        for model_type, pred in model_predictions.items():
-            weight = self.model_weights.get(model_type, 1.0)
+        for model_type, models in self.models.items():
+            predictions = np.full((n_samples, n_targets), np.nan)
             
-            if pred.ndim == 1 and n_targets > 1:
-                pred = pred.reshape(-1, 1)
-            elif pred.ndim == 2 and n_targets == 1:
-                pred = pred.flatten()
+            for target_idx, model in models.items():
+                try:
+                    if model_type == 'lgbm':
+                        pred = model.predict(X)
+                    else:
+                        pred = model.predict(X)
+                    
+                    predictions[:, target_idx] = pred
+                    
+                except Exception as e:
+                    logger.warning(f"Error predicting with {model_type} target {target_idx}: {e}")
+                    continue
             
-            ensemble_pred += weight * pred
-            total_weight += weight
+            all_predictions[model_type] = predictions
         
-        # Normalize by total weight
-        if total_weight > 0:
-            ensemble_pred /= total_weight
-        
-        logger.info(f"Generated ensemble predictions using {len(model_predictions)} models")
-        return ensemble_pred
-
+        return all_predictions
 
 # ============================================================================
 # STACKING ENSEMBLE
 # ============================================================================
 
-class StackingEnsemble(BaseEstimator, RegressorMixin):
-    """Stacking ensemble combining GCN and tree ensemble models using cross-validation."""
+class StackingEnsemble:
+    """Stacking ensemble combining GNN and tree models."""
     
-    def __init__(self, gcn_model_class, gcn_params=None, tree_models=None, 
-                 cv_folds=5, random_state=42, device=None, batch_size=32, 
-                 gcn_epochs=50):
-        self.gcn_model_class = gcn_model_class
-        self.gcn_params = gcn_params or {}
-        self.tree_models = tree_models or ['lgbm', 'xgb']
+    def __init__(self, meta_model=None, cv_folds=5, random_state=42):
+        self.meta_model = meta_model or Ridge(alpha=1.0, random_state=random_state)
         self.cv_folds = cv_folds
         self.random_state = random_state
-        self.device = device or torch.device('cpu')
-        self.batch_size = batch_size
-        self.gcn_epochs = gcn_epochs
-        
-        # Fitted components
-        self.base_models_ = {}
-        self.meta_models_ = {}
-        self.n_targets_ = None
-        self.target_cols_ = None
-        self.cv_scores_ = {}
-        
-        # Set random seeds
-        np.random.seed(self.random_state)
-        torch.manual_seed(self.random_state)
+        self.base_models = {}
+        self.fitted = False
     
-    def _create_cv_splits(self, X, y):
-        """Create cross-validation splits ensuring no data leakage."""
-        kf = KFold(n_splits=self.cv_folds, shuffle=True, random_state=self.random_state)
-        splits = list(kf.split(X))
-        
-        logger.info(f"Created {len(splits)} CV splits with approximately "
-                   f"{len(splits[0][0])} train and {len(splits[0][1])} validation samples each")
-        
-        return splits
+    def add_base_model(self, name, model):
+        """Add a base model to the ensemble."""
+        self.base_models[name] = model
     
-    def _train_gcn_fold(self, train_df, val_df, fold_idx):
-        """Train GCN model on one CV fold."""
-        logger.info(f"Training GCN for fold {fold_idx + 1}/{self.cv_folds}")
-        
-        try:
-            # Create datasets
-            train_dataset = PolymerDataset(train_df, target_cols=self.target_cols_, is_test=False)
-            val_dataset = PolymerDataset(val_df, target_cols=self.target_cols_, is_test=False)
-            
-            # Create data loaders
-            def collate_fn(batch):
-                valid_batch = [item for item in batch if item is not None]
-                if len(valid_batch) == 0:
-                    return None
-                from torch_geometric.data import Batch
-                return Batch.from_data_list(valid_batch)
-            
-            train_loader = DataLoader(train_dataset, batch_size=self.batch_size, 
-                                    shuffle=True, collate_fn=collate_fn)
-            val_loader = DataLoader(val_dataset, batch_size=self.batch_size, 
-                                  shuffle=False, collate_fn=collate_fn)
-            
-            # Get number of atom features from a sample
-            sample_data = None
-            for data in train_dataset:
-                if data is not None:
-                    sample_data = data
-                    break
-            
-            if sample_data is None:
-                raise ValueError(f"No valid molecular graphs found in fold {fold_idx}")
-            
-            num_atom_features = sample_data.x.size(1)
-            
-            # Initialize model
-            model = self.gcn_model_class(
-                num_atom_features=num_atom_features,
-                **self.gcn_params
-            ).to(self.device)
-            
-            optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
-            
-            # Training loop
-            best_val_loss = float('inf')
-            patience = 10
-            patience_counter = 0
-            
-            for epoch in range(self.gcn_epochs):
-                # Train
-                train_loss = train_one_epoch(model, train_loader, optimizer, self.device)
-                
-                # Validate
-                val_loss, val_rmses = evaluate(model, val_loader, self.device)
-                
-                # Early stopping
-                if val_loss < best_val_loss:
-                    best_val_loss = val_loss
-                    patience_counter = 0
-                    best_model_state = model.state_dict().copy()
-                else:
-                    patience_counter += 1
-                
-                if patience_counter >= patience:
-                    logger.info(f"Early stopping at epoch {epoch + 1}")
-                    break
-                
-                if epoch % 10 == 0:
-                    logger.info(f"Fold {fold_idx + 1}, Epoch {epoch + 1}: "
-                              f"Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}")
-            
-            # Load best model state
-            model.load_state_dict(best_model_state)
-            
-            # Generate validation predictions
-            try:
-                val_ids, val_preds = predict(model, val_loader, self.device)
-            except Exception as e:
-                logger.error(f"Error in predict function: {str(e)}")
-                n_val_samples = len(val_df)
-                val_preds = np.full((n_val_samples, self.n_targets_), np.nan)
-            
-            # Calculate final validation scores
-            final_val_loss, final_val_rmses = evaluate(model, val_loader, self.device)
-            
-            # Clean up
-            del model, optimizer, train_loader, val_loader, train_dataset, val_dataset
-            torch.cuda.empty_cache() if torch.cuda.is_available() else None
-            gc.collect()
-            
-            return val_preds, final_val_rmses
-            
-        except Exception as e:
-            logger.error(f"Error training GCN for fold {fold_idx}: {str(e)}")
-            n_val_samples = len(val_df)
-            dummy_preds = np.full((n_val_samples, self.n_targets_), np.nan)
-            dummy_scores = {col: np.nan for col in self.target_cols_}
-            return dummy_preds, dummy_scores
-    
-    def _train_tree_fold(self, X_train, y_train, X_val, y_val, fold_idx):
-        """Train tree ensemble on one CV fold."""
-        logger.info(f"Training tree ensemble for fold {fold_idx + 1}/{self.cv_folds}")
-        
-        try:
-            # Create tree ensemble
-            tree_ensemble = TreeEnsemble(models=self.tree_models, random_state=self.random_state)
-            
-            # Train ensemble
-            tree_ensemble.fit(X_train, y_train)
-            
-            # Generate validation predictions
-            val_preds = tree_ensemble.predict(X_val)
-            
-            # Calculate validation scores
-            val_scores = {}
-            for i, col in enumerate(self.target_cols_):
-                mask = ~np.isnan(y_val[:, i])
-                if np.any(mask):
-                    rmse = np.sqrt(mean_squared_error(y_val[mask, i], val_preds[mask, i]))
-                    val_scores[col] = rmse
-                else:
-                    val_scores[col] = np.nan
-            
-            return val_preds, val_scores
-            
-        except Exception as e:
-            logger.error(f"Error training tree ensemble for fold {fold_idx}: {str(e)}")
-            dummy_preds = np.full((len(X_val), self.n_targets_), np.nan)
-            dummy_scores = {col: np.nan for col in self.target_cols_}
-            return dummy_preds, dummy_scores
-    
-    def _generate_base_predictions(self, df, X, y):
-        """Generate out-of-fold predictions from base models using cross-validation."""
-        logger.info("Generating out-of-fold predictions from base models...")
-        
-        # Initialize out-of-fold prediction arrays
-        gcn_oof_preds = np.full((len(df), self.n_targets_), np.nan)
-        tree_oof_preds = np.full((len(df), self.n_targets_), np.nan)
-        
-        # Create CV splits
-        cv_splits = self._create_cv_splits(X, y)
-        
-        # Store CV scores for each fold
-        gcn_fold_scores = []
-        tree_fold_scores = []
-        
-        for fold_idx, (train_idx, val_idx) in enumerate(cv_splits):
-            logger.info(f"Processing fold {fold_idx + 1}/{self.cv_folds}")
-            
-            # Split data
-            train_df = df.iloc[train_idx].copy()
-            val_df = df.iloc[val_idx].copy()
-            X_train, X_val = X[train_idx], X[val_idx]
-            y_train, y_val = y[train_idx], y[val_idx]
-            
-            # Train GCN and get validation predictions
-            gcn_val_preds, gcn_val_scores = self._train_gcn_fold(train_df, val_df, fold_idx)
-            gcn_oof_preds[val_idx] = gcn_val_preds
-            gcn_fold_scores.append(gcn_val_scores)
-            
-            # Train tree ensemble and get validation predictions
-            tree_val_preds, tree_val_scores = self._train_tree_fold(
-                X_train, y_train, X_val, y_val, fold_idx
-            )
-            tree_oof_preds[val_idx] = tree_val_preds
-            tree_fold_scores.append(tree_val_scores)
-            
-            logger.info(f"Fold {fold_idx + 1} completed")
-        
-        # Calculate average CV scores
-        self.cv_scores_['gcn'] = self._average_fold_scores(gcn_fold_scores)
-        self.cv_scores_['tree'] = self._average_fold_scores(tree_fold_scores)
-        
-        logger.info("Out-of-fold prediction generation completed")
-        logger.info(f"GCN CV scores: {self.cv_scores_['gcn']}")
-        logger.info(f"Tree CV scores: {self.cv_scores_['tree']}")
-        
-        return gcn_oof_preds, tree_oof_preds
-    
-    def _average_fold_scores(self, fold_scores):
-        """Average scores across folds, handling NaN values."""
-        avg_scores = {}
-        for col in self.target_cols_:
-            scores = [fold_score[col] for fold_score in fold_scores 
-                     if not np.isnan(fold_score[col])]
-            avg_scores[col] = np.mean(scores) if scores else np.nan
-        return avg_scores
-    
-    def _train_meta_models(self, base_predictions, y):
-        """Train meta-learner models to combine base model predictions."""
-        logger.info("Training meta-learner models...")
-        
-        # Train separate meta-model for each target
-        for target_idx, target_col in enumerate(self.target_cols_):
-            logger.info(f"Training meta-model for {target_col}")
-            
-            # Get target values and mask for non-missing values
-            y_target = y[:, target_idx]
-            mask = ~np.isnan(y_target)
-            
-            if not np.any(mask):
-                logger.warning(f"No valid targets for {target_col}, skipping meta-model training")
-                continue
-            
-            # Get base predictions for this target
-            gcn_pred_col = target_idx
-            tree_pred_col = self.n_targets_ + target_idx
-            
-            # Extract predictions for this target from both models
-            X_meta = base_predictions[mask][:, [gcn_pred_col, tree_pred_col]]
-            y_meta = y_target[mask]
-            
-            # Handle cases where base predictions might be NaN
-            valid_pred_mask = ~np.isnan(X_meta).any(axis=1)
-            if not np.any(valid_pred_mask):
-                logger.warning(f"No valid base predictions for {target_col}, skipping")
-                continue
-            
-            X_meta = X_meta[valid_pred_mask]
-            y_meta = y_meta[valid_pred_mask]
-            
-            # Train meta-model
-            meta_model = Ridge(alpha=1.0, random_state=self.random_state)
-            meta_model.fit(X_meta, y_meta)
-            
-            self.meta_models_[target_idx] = meta_model
-            
-            # Log meta-model performance
-            meta_pred = meta_model.predict(X_meta)
-            meta_rmse = np.sqrt(mean_squared_error(y_meta, meta_pred))
-            logger.info(f"Meta-model RMSE for {target_col}: {meta_rmse:.4f}")
-        
-        logger.info("Meta-learner training completed")
-    
-    def fit(self, df, X, y):
+    def fit(self, X_tabular, X_graph_loader, y):
         """Fit the stacking ensemble."""
-        logger.info("Starting stacking ensemble training...")
+        logger.info("Training stacking ensemble...")
         
-        # Store target information
-        self.n_targets_ = y.shape[1]
+        y = np.asarray(y)
+        if y.ndim == 1:
+            y = y.reshape(-1, 1)
         
-        # Try to get target column names from DataFrame
-        common_targets = ['Tg', 'FFV', 'Tc', 'Density', 'Rg']
-        available_targets = [col for col in common_targets if col in df.columns]
+        n_samples, n_targets = y.shape
         
-        if len(available_targets) == self.n_targets_:
-            self.target_cols_ = available_targets
+        # Generate out-of-fold predictions for meta-model training
+        kf = KFold(n_splits=self.cv_folds, shuffle=True, random_state=self.random_state)
+        
+        # Placeholder for meta-features
+        meta_features = []
+        meta_targets = []
+        
+        for fold, (train_idx, val_idx) in enumerate(kf.split(X_tabular)):
+            logger.info(f"Processing fold {fold + 1}/{self.cv_folds}")
+            
+            fold_predictions = []
+            
+            # Tree models on tabular features
+            if 'tree_ensemble' in self.base_models:
+                X_train_fold = X_tabular[train_idx]
+                y_train_fold = y[train_idx]
+                X_val_fold = X_tabular[val_idx]
+                
+                tree_model = clone(self.base_models['tree_ensemble'])
+                tree_model.fit(X_train_fold, y_train_fold)
+                tree_preds = tree_model.predict(X_val_fold)
+                
+                # Average predictions across tree models
+                if isinstance(tree_preds, dict):
+                    tree_pred_avg = np.mean([pred for pred in tree_preds.values()], axis=0)
+                else:
+                    tree_pred_avg = tree_preds
+                
+                fold_predictions.append(tree_pred_avg)
+            
+            # Add GNN predictions if available
+            # (This would require more complex cross-validation for graph data)
+            
+            # Combine fold predictions
+            if fold_predictions:
+                combined_preds = np.concatenate(fold_predictions, axis=1)
+                meta_features.append(combined_preds)
+                meta_targets.append(y[val_idx])
+        
+        if meta_features:
+            # Train meta-model
+            X_meta = np.vstack(meta_features)
+            y_meta = np.vstack(meta_targets)
+            
+            # Train separate meta-model for each target
+            self.meta_models = {}
+            for target_idx in range(n_targets):
+                y_target = y_meta[:, target_idx]
+                mask = ~np.isnan(y_target)
+                
+                if np.any(mask):
+                    meta_model = clone(self.meta_model)
+                    meta_model.fit(X_meta[mask], y_target[mask])
+                    self.meta_models[target_idx] = meta_model
+        
+        # Train final base models on full data
+        for name, model in self.base_models.items():
+            if name == 'tree_ensemble':
+                model.fit(X_tabular, y)
+        
+        self.fitted = True
+        logger.info("Stacking ensemble training completed")
+    
+    def predict(self, X_tabular, X_graph_loader=None):
+        """Generate ensemble predictions."""
+        if not self.fitted:
+            raise ValueError("Ensemble must be fitted before prediction")
+        
+        base_predictions = []
+        
+        # Get tree model predictions
+        if 'tree_ensemble' in self.base_models:
+            tree_preds = self.base_models['tree_ensemble'].predict(X_tabular)
+            if isinstance(tree_preds, dict):
+                tree_pred_avg = np.mean([pred for pred in tree_preds.values()], axis=0)
+            else:
+                tree_pred_avg = tree_preds
+            base_predictions.append(tree_pred_avg)
+        
+        # Combine base predictions
+        if base_predictions:
+            X_meta = np.concatenate(base_predictions, axis=1)
+            
+            # Generate meta-predictions
+            n_samples = X_meta.shape[0]
+            n_targets = len(config.TARGET_COLS)
+            final_predictions = np.zeros((n_samples, n_targets))
+            
+            for target_idx in range(n_targets):
+                if target_idx in self.meta_models:
+                    final_predictions[:, target_idx] = self.meta_models[target_idx].predict(X_meta)
+                else:
+                    # Fallback to average of base predictions
+                    final_predictions[:, target_idx] = X_meta[:, target_idx] if X_meta.shape[1] > target_idx else 0
+            
+            return final_predictions
+        
+        return np.zeros((X_tabular.shape[0], len(config.TARGET_COLS)))
+
+# ============================================================================
+# MAIN PIPELINE
+# ============================================================================
+
+def load_data():
+    """Load training and test data."""
+    logger.info("Loading data...")
+    
+    # Try Kaggle paths first, then local paths
+    train_paths = [
+        os.path.join(config.DATA_PATH, config.TRAIN_FILE),
+        "info/train.csv",
+        "train.csv"
+    ]
+    
+    test_paths = [
+        os.path.join(config.DATA_PATH, config.TEST_FILE),
+        "info/test.csv", 
+        "test.csv"
+    ]
+    
+    train_df = None
+    test_df = None
+    
+    for path in train_paths:
+        if os.path.exists(path):
+            train_df = pd.read_csv(path)
+            logger.info(f"Loaded training data from {path}: {train_df.shape}")
+            break
+    
+    for path in test_paths:
+        if os.path.exists(path):
+            test_df = pd.read_csv(path)
+            logger.info(f"Loaded test data from {path}: {test_df.shape}")
+            break
+    
+    if train_df is None or test_df is None:
+        raise FileNotFoundError("Could not find training or test data files")
+    
+    # Validate data
+    required_train_cols = ['id', 'SMILES'] + config.TARGET_COLS
+    required_test_cols = ['id', 'SMILES']
+    
+    missing_train_cols = set(required_train_cols) - set(train_df.columns)
+    missing_test_cols = set(required_test_cols) - set(test_df.columns)
+    
+    if missing_train_cols:
+        raise ValueError(f"Missing columns in training data: {missing_train_cols}")
+    if missing_test_cols:
+        raise ValueError(f"Missing columns in test data: {missing_test_cols}")
+    
+    # Remove invalid SMILES
+    def is_valid_smiles(smiles):
+        try:
+            if not isinstance(smiles, str) or len(smiles.strip()) == 0:
+                return False
+            with SuppressRDKitOutput():
+                mol = Chem.MolFromSmiles(smiles.strip())
+                if mol is None:
+                    return False
+                # Additional validation - ensure molecule has atoms
+                if mol.GetNumAtoms() == 0:
+                    return False
+                return True
+        except Exception:
+            return False
+    
+    train_valid = train_df['SMILES'].apply(is_valid_smiles)
+    test_valid = test_df['SMILES'].apply(is_valid_smiles)
+    
+    logger.info(f"Valid SMILES - Train: {train_valid.sum()}/{len(train_df)}, Test: {test_valid.sum()}/{len(test_df)}")
+    
+    train_df = train_df[train_valid].reset_index(drop=True)
+    test_df = test_df[test_valid].reset_index(drop=True)
+    
+    return train_df, test_df
+
+def train_gnn_model(train_loader, val_loader, device):
+    """Train the Graph Neural Network model."""
+    logger.info("Training GNN model...")
+    
+    # Get sample to determine feature dimensions
+    sample_batch = next(iter(train_loader))
+    if sample_batch is None:
+        raise ValueError("No valid batches in training data")
+    
+    num_atom_features = sample_batch.x.size(1)
+    num_edge_features = sample_batch.edge_attr.size(1) if hasattr(sample_batch, 'edge_attr') else 0
+    
+    logger.info(f"Atom features: {num_atom_features}, Edge features: {num_edge_features}")
+    
+    # Initialize model
+    model = PolymerGNN(
+        num_atom_features=num_atom_features,
+        num_edge_features=num_edge_features,
+        hidden_channels=config.HIDDEN_CHANNELS,
+        num_layers=config.NUM_GCN_LAYERS,
+        num_targets=len(config.TARGET_COLS),
+        dropout=config.DROPOUT
+    ).to(device)
+    
+    optimizer = AdamW(model.parameters(), lr=config.LEARNING_RATE, weight_decay=1e-5)
+    scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=10, verbose=True)
+    
+    best_val_loss = float('inf')
+    patience_counter = 0
+    
+    for epoch in range(config.NUM_EPOCHS):
+        # Training
+        train_loss = train_epoch(model, train_loader, optimizer, device)
+        
+        # Validation
+        val_loss, val_metrics = evaluate_model(model, val_loader, device)
+        
+        scheduler.step(val_loss)
+        
+        if epoch % 10 == 0:
+            logger.info(f"Epoch {epoch}: Train Loss = {train_loss:.4f}, Val Loss = {val_loss:.4f}")
+            
+            if val_metrics:
+                for target, metrics in val_metrics.items():
+                    logger.info(f"  {target}: MAE = {metrics['mae']:.4f}, RMSE = {metrics['rmse']:.4f}")
+        
+        # Early stopping
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            patience_counter = 0
+            # Save best model
+            torch.save(model.state_dict(), 'best_gnn_model.pt')
         else:
-            self.target_cols_ = [f'target_{i}' for i in range(self.n_targets_)]
+            patience_counter += 1
+            if patience_counter >= config.PATIENCE:
+                logger.info(f"Early stopping at epoch {epoch}")
+                break
         
-        # Generate out-of-fold predictions from base models
-        gcn_oof_preds, tree_oof_preds = self._generate_base_predictions(df, X, y)
-        
-        # Combine base predictions for meta-learning
-        base_predictions = np.concatenate([gcn_oof_preds, tree_oof_preds], axis=1)
-        
-        # Train meta-learner models
-        self._train_meta_models(base_predictions, y)
-        
-        # Train final base models on full dataset for prediction
-        logger.info("Training final base models on full dataset...")
-        
-        # Train final GCN model
-        try:
-            def collate_fn(batch):
-                valid_batch = [item for item in batch if item is not None]
-                if len(valid_batch) == 0:
-                    return None
-                from torch_geometric.data import Batch
-                return Batch.from_data_list(valid_batch)
-            
-            full_dataset = PolymerDataset(df, target_cols=self.target_cols_, is_test=False)
-            full_loader = DataLoader(full_dataset, batch_size=self.batch_size, 
-                                   shuffle=True, collate_fn=collate_fn)
-            
-            # Get sample for num_atom_features
-            sample_data = None
-            for data in full_dataset:
-                if data is not None:
-                    sample_data = data
-                    break
-            
-            if sample_data is not None:
-                num_atom_features = sample_data.x.size(1)
-                final_gcn = self.gcn_model_class(
-                    num_atom_features=num_atom_features,
-                    **self.gcn_params
-                ).to(self.device)
-                
-                optimizer = torch.optim.Adam(final_gcn.parameters(), lr=0.001)
-                
-                for epoch in range(self.gcn_epochs):
-                    train_loss = train_one_epoch(final_gcn, full_loader, optimizer, self.device)
-                    if epoch % 10 == 0:
-                        logger.info(f"Final GCN Epoch {epoch + 1}: Loss {train_loss:.4f}")
-                
-                self.base_models_['gcn'] = final_gcn
-            
-        except Exception as e:
-            logger.error(f"Error training final GCN model: {str(e)}")
-        
-        # Train final tree ensemble
-        try:
-            final_tree = TreeEnsemble(models=self.tree_models, random_state=self.random_state)
-            final_tree.fit(X, y)
-            self.base_models_['tree'] = final_tree
-            
-        except Exception as e:
-            logger.error(f"Error training final tree ensemble: {str(e)}")
-        
-        logger.info("Stacking ensemble training completed!")
-        return self
+        # Memory cleanup
+        if epoch % 20 == 0:
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
     
-    def predict(self, df, X):
-        """Make predictions using the fitted stacking ensemble."""
-        if not self.meta_models_ and not self.base_models_:
-            raise ValueError("Stacking ensemble must be fitted before making predictions")
-        
-        logger.info("Generating predictions with stacking ensemble...")
-        
-        n_samples = len(df)
-        predictions = np.full((n_samples, self.n_targets_), np.nan)
-        
-        # Get base model predictions
-        gcn_preds = np.full((n_samples, self.n_targets_), np.nan)
-        tree_preds = np.full((n_samples, self.n_targets_), np.nan)
-        
-        # GCN predictions
-        if 'gcn' in self.base_models_:
-            try:
-                def collate_fn(batch):
-                    valid_batch = [item for item in batch if item is not None]
-                    if len(valid_batch) == 0:
-                        return None
-                    from torch_geometric.data import Batch
-                    return Batch.from_data_list(valid_batch)
-                
-                test_dataset = PolymerDataset(df, target_cols=self.target_cols_, is_test=True)
-                test_loader = DataLoader(test_dataset, batch_size=self.batch_size, 
-                                       shuffle=False, collate_fn=collate_fn)
-                
-                try:
-                    _, gcn_preds = predict(self.base_models_['gcn'], test_loader, self.device)
-                except Exception as e:
-                    logger.error(f"Error in GCN prediction: {str(e)}")
-                    gcn_preds = np.full((n_samples, self.n_targets_), np.nan)
-                
-            except Exception as e:
-                logger.error(f"Error generating GCN predictions: {str(e)}")
-        
-        # Tree ensemble predictions
-        if 'tree' in self.base_models_:
-            try:
-                tree_preds = self.base_models_['tree'].predict(X)
-            except Exception as e:
-                logger.error(f"Error generating tree predictions: {str(e)}")
-        
-        # Combine predictions using meta-models
-        for target_idx, target_col in enumerate(self.target_cols_):
-            if target_idx not in self.meta_models_:
-                # Use simple average if no meta-model
-                valid_gcn = ~np.isnan(gcn_preds[:, target_idx])
-                valid_tree = ~np.isnan(tree_preds[:, target_idx])
-                
-                if np.any(valid_gcn) and np.any(valid_tree):
-                    both_valid = valid_gcn & valid_tree
-                    predictions[both_valid, target_idx] = (
-                        gcn_preds[both_valid, target_idx] + 
-                        tree_preds[both_valid, target_idx]
-                    ) / 2
-                    
-                    only_gcn = valid_gcn & ~valid_tree
-                    predictions[only_gcn, target_idx] = gcn_preds[only_gcn, target_idx]
-                    
-                    only_tree = ~valid_gcn & valid_tree
-                    predictions[only_tree, target_idx] = tree_preds[only_tree, target_idx]
-                
-                elif np.any(valid_gcn):
-                    predictions[valid_gcn, target_idx] = gcn_preds[valid_gcn, target_idx]
-                elif np.any(valid_tree):
-                    predictions[valid_tree, target_idx] = tree_preds[valid_tree, target_idx]
-                
-                continue
-            
-            # Use meta-model predictions
-            meta_model = self.meta_models_[target_idx]
-            
-            # Prepare base predictions for meta-model
-            base_pred_features = np.column_stack([
-                gcn_preds[:, target_idx],
-                tree_preds[:, target_idx]
-            ])
-            
-            # Only predict where both base models have valid predictions
-            valid_mask = ~np.isnan(base_pred_features).any(axis=1)
-            
-            if np.any(valid_mask):
-                meta_preds = meta_model.predict(base_pred_features[valid_mask])
-                predictions[valid_mask, target_idx] = meta_preds
-        
-        logger.info("Stacking ensemble predictions completed")
-        return predictions
+    # Load best model
+    model.load_state_dict(torch.load('best_gnn_model.pt'))
+    logger.info("GNN training completed")
     
-    def get_cv_scores(self):
-        """Get cross-validation scores for base models."""
-        return self.cv_scores_.copy()
-
-
-# ============================================================================
-# FEATURE ENGINEERING
-# ============================================================================
-
-def create_molecular_features(df):
-    """Create molecular features from SMILES."""
-    logger.info("Creating molecular features...")
-    
-    features = []
-    
-    for smiles in df['SMILES']:
-        # Simple features based on SMILES string
-        feature_vector = [
-            len(smiles),  # Length
-            smiles.count('C'),  # Carbon count
-            smiles.count('N'),  # Nitrogen count
-            smiles.count('O'),  # Oxygen count
-            smiles.count('S'),  # Sulfur count
-            smiles.count('F'),  # Fluorine count
-            smiles.count('='),  # Double bonds
-            smiles.count('#'),  # Triple bonds
-            smiles.count('('),  # Branches
-            smiles.count('['),  # Brackets
-            smiles.count('c'),  # Aromatic carbons
-            smiles.count('n'),  # Aromatic nitrogens
-            smiles.count('o'),  # Aromatic oxygens
-            smiles.count('s'),  # Aromatic sulfurs
-            smiles.count('*'),  # Wildcards (polymer connection points)
-        ]
-        features.append(feature_vector)
-    
-    features_array = np.array(features, dtype=np.float32)
-    logger.info(f"Created molecular features: {features_array.shape}")
-    
-    return features_array
-
-
-def load_competition_data():
-    """Load and combine all competition data."""
-    logger.info("Loading competition data...")
-    
-    # Load main training data
-    train_df = pd.read_csv('train.csv')
-    logger.info(f"Loaded main training data: {len(train_df)} samples")
-    
-    # Load supplemental datasets if available
-    supplement_dfs = []
-    for i in range(1, 5):
-        supp_path = f'train_supplement/dataset{i}.csv'
-        if os.path.exists(supp_path):
-            supp_df = pd.read_csv(supp_path)
-            logger.info(f"Loaded supplement dataset {i}: {len(supp_df)} samples")
-            supplement_dfs.append(supp_df)
-    
-    # Process supplemental data
-    combined_supplement = pd.DataFrame()
-    for df in supplement_dfs:
-        if 'TC_mean' in df.columns:
-            # This is thermal conductivity data
-            df_processed = df.rename(columns={'TC_mean': 'Tc'})
-            df_processed['id'] = range(len(combined_supplement), len(combined_supplement) + len(df_processed))
-            combined_supplement = pd.concat([combined_supplement, df_processed], ignore_index=True)
-    
-    if len(combined_supplement) > 0:
-        logger.info(f"Combined supplemental data: {len(combined_supplement)} samples")
-        
-        # Align columns
-        main_cols = ['id', 'SMILES', 'Tg', 'FFV', 'Tc', 'Density', 'Rg']
-        supp_cols = ['id', 'SMILES'] + [col for col in ['Tg', 'FFV', 'Tc', 'Density', 'Rg'] if col in combined_supplement.columns]
-        
-        # Fill missing columns with NaN
-        for col in main_cols:
-            if col not in combined_supplement.columns:
-                combined_supplement[col] = np.nan
-        
-        # Combine datasets
-        full_df = pd.concat([train_df[main_cols], combined_supplement[main_cols]], ignore_index=True)
-    else:
-        full_df = train_df
-    
-    logger.info(f"Total combined data: {len(full_df)} samples")
-    
-    # Load test data
-    test_df = pd.read_csv('test.csv')
-    logger.info(f"Loaded test data: {len(test_df)} samples")
-    
-    return full_df, test_df
-
-
-# ============================================================================
-# MAIN EXECUTION
-# ============================================================================
+    return model
 
 def main():
-    """Main execution function."""
-    logger.info("NeurIPS 2025 Polymer Prediction - Stacking Ensemble Solution")
-    logger.info("=" * 70)
-    
-    # Set device
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    logger.info(f"Using device: {device}")
+    """Main execution pipeline."""
+    logger.info("Starting Polymer Prediction Pipeline")
+    logger.info(f"Device: {config.DEVICE}")
+    logger.info(f"Target columns: {config.TARGET_COLS}")
     
     try:
         # Load data
-        train_df, test_df = load_competition_data()
+        train_df, test_df = load_data()
         
-        # Filter out samples with all missing targets for training
-        target_cols = ['Tg', 'FFV', 'Tc', 'Density', 'Rg']
-        train_df_clean = train_df.dropna(subset=target_cols, how='all').copy()
-        logger.info(f"Training samples after removing all-missing: {len(train_df_clean)}")
+        # Initialize molecular featurizer
+        featurizer = MolecularFeaturizer()
         
-        # Create molecular features
-        X_train = create_molecular_features(train_df_clean)
-        X_test = create_molecular_features(test_df)
+        # Generate molecular features for tree models
+        logger.info("Generating molecular features for tree models...")
+        train_features, train_valid_idx = featurizer.featurize_molecules(train_df['SMILES'].tolist())
+        test_features, test_valid_idx = featurizer.featurize_molecules(test_df['SMILES'].tolist())
         
-        # Prepare target matrix
-        y_train = train_df_clean[target_cols].values.astype(np.float32)
+        # Fit and transform features
+        featurizer.fit_scaler(train_features)
+        train_features_scaled = featurizer.transform_features(train_features)
+        test_features_scaled = featurizer.transform_features(test_features)
         
-        # Check data quality
-        logger.info("Data quality check:")
-        for i, col in enumerate(target_cols):
-            valid_count = np.sum(~np.isnan(y_train[:, i]))
-            logger.info(f"  {col}: {valid_count}/{len(y_train)} valid values ({valid_count/len(y_train)*100:.1f}%)")
+        # Prepare targets for tree models
+        train_targets = train_df[config.TARGET_COLS].values
         
-        # Scale features
-        scaler = StandardScaler()
-        X_train_scaled = scaler.fit_transform(X_train)
-        X_test_scaled = scaler.transform(X_test)
+        # Create graph data loaders
+        logger.info("Creating graph data loaders...")
+        train_loader, test_loader = create_data_loaders(train_df, test_df, featurizer)
         
-        # Create stacking ensemble
-        logger.info("Creating stacking ensemble...")
-        ensemble = StackingEnsemble(
-            gcn_model_class=PolymerGCN,
-            gcn_params={
-                'hidden_channels': 64,
-                'num_gcn_layers': 3,
-                'dropout': 0.2
-            },
-            tree_models=['lgbm', 'xgb'],  # Use available tree models
-            cv_folds=5,
-            gcn_epochs=50,
-            random_state=42,
-            device=device,
-            batch_size=32
+        # Split training data for validation
+        from sklearn.model_selection import train_test_split
+        
+        train_idx, val_idx = train_test_split(
+            range(len(train_df)), 
+            test_size=0.2, 
+            random_state=RANDOM_SEED,
+            stratify=None
         )
         
-        logger.info("Training stacking ensemble...")
-        logger.info("This may take 30-60 minutes depending on your hardware...")
+        train_subset = train_df.iloc[train_idx].reset_index(drop=True)
+        val_subset = train_df.iloc[val_idx].reset_index(drop=True)
         
-        # Train the ensemble
-        ensemble.fit(train_df_clean, X_train_scaled, y_train)
+        # Create validation dataset with targets (not as test data)
+        train_dataset_subset = PolymerDataset(train_subset, featurizer, is_test=False)
+        val_dataset = PolymerDataset(val_subset, featurizer, is_test=False)  # Keep targets for validation
         
-        logger.info("Training completed!")
+        def collate_fn(batch):
+            batch = [item for item in batch if item is not None]
+            if len(batch) == 0:
+                return None
+            return Batch.from_data_list(batch)
         
-        # Get training information
-        cv_scores = ensemble.get_cv_scores()
+        train_loader_subset = DataLoader(train_dataset_subset, batch_size=config.BATCH_SIZE, shuffle=True, collate_fn=collate_fn, num_workers=0)
+        val_loader = DataLoader(val_dataset, batch_size=config.BATCH_SIZE, shuffle=False, collate_fn=collate_fn, num_workers=0)
         
-        logger.info("Training Results:")
-        if 'gcn' in cv_scores:
-            logger.info("  GCN CV scores:")
-            for prop, score in cv_scores['gcn'].items():
-                if not np.isnan(score):
-                    logger.info(f"    {prop}: {score:.4f} RMSE")
+        # Train models
+        predictions = {}
         
-        if 'tree' in cv_scores:
-            logger.info("  Tree ensemble CV scores:")
-            for prop, score in cv_scores['tree'].items():
-                if not np.isnan(score):
-                    logger.info(f"    {prop}: {score:.4f} RMSE")
+        # 1. Train Tree Ensemble
+        logger.info("Training tree ensemble models...")
+        tree_ensemble = TreeEnsembleModel()
+        tree_ensemble.fit(train_features_scaled, train_targets)
+        tree_predictions = tree_ensemble.predict(test_features_scaled)
         
-        # Make predictions on test set
-        logger.info("Making predictions on test set...")
-        predictions = ensemble.predict(test_df, X_test_scaled)
+        # Average tree model predictions
+        if tree_predictions:
+            tree_pred_avg = np.mean([pred for pred in tree_predictions.values()], axis=0)
+            predictions['tree_ensemble'] = tree_pred_avg
         
-        logger.info(f"Prediction shape: {predictions.shape}")
-        logger.info(f"Valid predictions: {np.sum(~np.isnan(predictions))}/{predictions.size}")
+        # 2. Train GNN Model
+        logger.info("Training Graph Neural Network...")
+        try:
+            gnn_model = train_gnn_model(train_loader_subset, val_loader, config.DEVICE)
+            
+            # Generate GNN predictions
+            test_ids, gnn_predictions = predict_with_model(gnn_model, test_loader, config.DEVICE)
+            predictions['gnn'] = gnn_predictions
+            
+        except Exception as e:
+            logger.error(f"GNN training failed: {e}")
+            logger.info("Continuing with tree ensemble only...")
+        
+        # 3. Ensemble predictions
+        if len(predictions) > 1:
+            logger.info("Combining predictions with ensemble...")
+            # Simple averaging for now
+            final_predictions = np.mean([pred for pred in predictions.values()], axis=0)
+        else:
+            final_predictions = list(predictions.values())[0]
         
         # Create submission
-        submission = pd.DataFrame({
-            'id': test_df['id'],
-            'Tg': predictions[:, 0],
-            'FFV': predictions[:, 1],
-            'Tc': predictions[:, 2],
-            'Density': predictions[:, 3],
-            'Rg': predictions[:, 4]
-        })
+        logger.info("Creating submission file...")
+        submission = pd.DataFrame({'id': test_df['id']})
         
-        # Fill any remaining NaN values with 0 (as per sample submission)
-        submission = submission.fillna(0)
+        for i, col in enumerate(config.TARGET_COLS):
+            if i < final_predictions.shape[1]:
+                submission[col] = final_predictions[:, i]
+            else:
+                submission[col] = 0.0
+        
+        # Validate submission
+        for col in config.TARGET_COLS:
+            if submission[col].isna().any():
+                logger.warning(f"Found NaN values in {col}, filling with 0")
+                submission[col].fillna(0, inplace=True)
+            
+            if np.isinf(submission[col]).any():
+                logger.warning(f"Found infinite values in {col}, clipping")
+                submission[col] = np.clip(submission[col], -1e6, 1e6)
         
         # Save submission
-        submission.to_csv('submission.csv', index=False)
-        logger.info("Submission saved to 'submission.csv'")
+        submission.to_csv(config.SUBMISSION_FILE, index=False)
+        logger.info(f"Submission saved to {config.SUBMISSION_FILE}")
+        logger.info(f"Submission shape: {submission.shape}")
+        logger.info(f"Sample predictions:\n{submission.head()}")
         
-        # Show sample predictions
-        logger.info("Sample predictions:")
-        for i in range(min(5, len(predictions))):
-            logger.info(f"  Sample {i+1}: Tg={predictions[i,0]:.3f}, FFV={predictions[i,1]:.3f}, "
-                       f"Tc={predictions[i,2]:.3f}, Density={predictions[i,3]:.3f}, Rg={predictions[i,4]:.3f}")
+        # Print summary statistics
+        logger.info("\nPrediction Summary:")
+        for col in config.TARGET_COLS:
+            values = submission[col]
+            logger.info(f"{col}: mean={values.mean():.4f}, std={values.std():.4f}, min={values.min():.4f}, max={values.max():.4f}")
         
-        logger.info("\n✅ Stacking ensemble completed successfully!")
-        logger.info("\nKey achievements:")
-        logger.info("- Successfully loaded and processed competition data")
-        logger.info("- Combined main training data with supplemental datasets")
-        logger.info("- Trained stacking ensemble with GCN and tree models")
-        logger.info("- Generated predictions using cross-validation and meta-learning")
-        logger.info("- Created competition-ready submission file")
-        
-        return True
+        logger.info("Pipeline completed successfully!")
         
     except Exception as e:
-        logger.error(f"Execution failed: {str(e)}")
-        import traceback
-        traceback.print_exc()
-        return False
-
+        logger.error(f"Pipeline failed with error: {e}")
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        
+        # Create dummy submission as fallback
+        logger.info("Creating dummy submission as fallback...")
+        try:
+            if 'test_df' in locals():
+                dummy_submission = pd.DataFrame({'id': test_df['id']})
+                for col in config.TARGET_COLS:
+                    dummy_submission[col] = 0.0
+                
+                dummy_submission.to_csv('dummy_' + config.SUBMISSION_FILE, index=False)
+                logger.info(f"Dummy submission saved to dummy_{config.SUBMISSION_FILE}")
+        except:
+            logger.error("Failed to create dummy submission")
+        
+        raise
 
 if __name__ == "__main__":
-    success = main()
-    if success:
-        print("\n🎉 Success! Check 'submission.csv' for your predictions.")
-    else:
-        print("\n❌ Execution failed. Check the logs above for details.")
+    main()
